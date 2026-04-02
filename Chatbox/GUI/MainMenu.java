@@ -15,7 +15,6 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
-import javafx.stage.DirectoryChooser;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ScrollPane;
@@ -255,16 +254,22 @@ public class MainMenu extends Application {
 
         tcpClient = new TcpChatClient();
         tcpClient.setOnSystem(msg -> Platform.runLater(() -> addSystemMessage(msg)));
+        
         tcpClient.setOnMessage(msg -> Platform.runLater(() -> {
-            boolean isSelf = msg.getFrom().equals(username);
-            String showText = isSelf ? msg.getContent() : msg.getFrom() + ": " + msg.getContent();
+            // Lấy tên người gửi từ gói tin
+            String senderName = msg.getFrom();
+            // So sánh với username của chính máy này
+            boolean isSelf = senderName.equals(username);
 
-            if ("SYSTEM".equals(msg.getFrom())) {
+            if ("SYSTEM".equals(senderName)) {
                 addSystemMessage(msg.getContent());
             } else if (isSelf) {
-                addSentMessage(showText);
+                // LÀ MÌNH GỬI: Chỉ hiện nội dung, hàm addSentMessage sẽ đẩy sang PHẢI
+                addSentMessage(msg.getContent());
             } else {
-                addReceivedMessage(showText);
+                // NGƯỜI KHÁC GỬI: Hiện "Tên: Nội dung", hàm addReceivedMessage sẽ đẩy sang TRÁI
+                String formattedMsg = senderName + ": " + msg.getContent();
+                addReceivedMessage(formattedMsg);
             }
         }));
 
@@ -281,16 +286,16 @@ public class MainMenu extends Application {
             udpReceiver = new UdpFileReceiver();
         }
         
-        // Gọi hàm start với 3 tham số: Cổng, Callback nhận file, và Callback log
         udpReceiver.start(UDP_PORT, (fileName, fileData) -> {
-            // Chạy trên luồng giao diện của JavaFX
+            Platform.runLater(() -> addFileTransferMessage(fileName, fileData,true));
+            }, (log) -> {
             Platform.runLater(() -> {
-                addFileTransferMessage(fileName, fileData);
+                addSystemMessage(log);
+                // Cập nhật trạng thái để người dùng biết máy đã sẵn sàng nhận
+                chatHeaderStatus.setText("UDP Ready (Port " + UDP_PORT + ")");
             });
-        }, (log) -> {
-            Platform.runLater(() -> addSystemMessage(log));
-        });
-    }
+    });
+}
 
     private void sendUdpFile(Stage stage) {
         TextInputDialog hostDialog = new TextInputDialog("127.0.0.1");
@@ -316,6 +321,8 @@ public class MainMenu extends Application {
                 System.out.println("--- Bắt đầu gửi file qua UDP tới " + host + ":" + UDP_PORT + " ---"); // Thêm dòng này
                 UdpFileSender sender = new UdpFileSender();
                 sender.sendFile(file, host, UDP_PORT);
+                byte[] data = java.nio.file.Files.readAllBytes(file.toPath());
+                Platform.runLater(() -> addFileTransferMessage(file.getName(), data, false)); // false vì mình là người gửi
 
                 Platform.runLater(() ->
                     addSystemMessage("Đã gửi file UDP: " + file.getName() + " tới " + host + ":" + UDP_PORT));
@@ -359,27 +366,40 @@ public class MainMenu extends Application {
     }
 
     private void addSentMessage(String text) {
-        MessageBubble bubble = new MessageBubble(text, true);
-        messageContainer.getChildren().add(bubble);
+        MessageBubble bubble = new MessageBubble(text, true); // true để hiện màu xanh
+        HBox container = new HBox(bubble);
+        container.setAlignment(Pos.CENTER_RIGHT); // Ép về bên PHẢI
+        container.setPadding(new Insets(2, 10, 2, 10));
+        messageContainer.getChildren().add(container);
         scrollToBottom();
     }
     
-    private void addFileTransferMessage(String fileName, byte[] fileData) {
-        HBox fileBox = new HBox(10);
-        fileBox.setStyle("-fx-background-color: #ffffff; -fx-padding: 10; -fx-background-radius: 10; -fx-border-color: #ddd;");
-        fileBox.setAlignment(Pos.CENTER_LEFT);
+    private void addFileTransferMessage(String fileName, byte[] fileData, boolean isIncoming) {
+        HBox wrapper = new HBox();
+        // Căn lề: true (nhận) -> Trái, false (gửi) -> Phải
+        wrapper.setAlignment(isIncoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+        wrapper.setPadding(new Insets(5, 10, 5, 10));
 
+        HBox fileBox = new HBox(10);
+        String bgColor = isIncoming ? "#ffffff" : "#e7f3ff";
+        fileBox.setStyle("-fx-background-color: " + bgColor + "; -fx-padding: 10; -fx-background-radius: 10; -fx-border-color: #ddd;");
+        fileBox.setAlignment(Pos.CENTER_LEFT);
+        fileBox.setMaxWidth(350);
+
+        // PHẢI CÓ CÁC DÒNG NÀY:
         Label icon = new Label("📄");
         Label nameLabel = new Label(fileName);
-        Button downloadBtn = new Button("Tải về");
-        
+        nameLabel.setWrapText(true);
+
+        Button downloadBtn = new Button(isIncoming ? "Tải về" : "Đã gửi");
+        downloadBtn.setDisable(!isIncoming); 
         downloadBtn.setStyle("-fx-background-color: #31a24c; -fx-text-fill: white;");
 
+        // Logic nút tải về (chỉ chạy nếu isIncoming = true)
         downloadBtn.setOnAction(e -> {
             FileChooser fileChooser = new FileChooser();
             fileChooser.setInitialFileName(fileName);
             File saveFile = fileChooser.showSaveDialog(null);
-
             if (saveFile != null) {
                 try {
                     java.nio.file.Files.write(saveFile.toPath(), fileData);
@@ -393,16 +413,20 @@ public class MainMenu extends Application {
         });
 
         fileBox.getChildren().addAll(icon, nameLabel, downloadBtn);
-        
+        wrapper.getChildren().add(fileBox);
+
         Platform.runLater(() -> {
-            messageContainer.getChildren().add(fileBox);
+            messageContainer.getChildren().add(wrapper);
             scrollToBottom();
         });
     }
 
     private void addReceivedMessage(String text) {
-        MessageBubble bubble = new MessageBubble(text, false);
-        messageContainer.getChildren().add(bubble);
+        MessageBubble bubble = new MessageBubble(text, false); // false để hiện màu xám/trắng
+        HBox container = new HBox(bubble);
+        container.setAlignment(Pos.CENTER_LEFT); // Ép về bên TRÁI
+        container.setPadding(new Insets(2, 10, 2, 10));
+        messageContainer.getChildren().add(container);
         scrollToBottom();
     }
 
