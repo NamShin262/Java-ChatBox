@@ -31,12 +31,14 @@ import javafx.scene.shape.Circle;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
+
 public class MainMenu extends Application {
 
     private VBox messageContainer;
     private TextField messageField;
     private Label chatHeaderName;
     private ScrollPane messageScroll;
+    private java.net.DatagramSocket udpBroadcaster;
 
     private TcpChatServer tcpServer;
     private TcpChatClient tcpClient;
@@ -76,6 +78,7 @@ public class MainMenu extends Application {
 
         Platform.runLater(() -> {
             connectAuto("127.0.0.1");
+            broadcastLogin();
         });
     }
 
@@ -332,10 +335,67 @@ public class MainMenu extends Application {
     }
 
     private void startUdpReceiver() {
-        if (udpReceiver == null) udpReceiver = new UdpFileReceiver();
-        udpReceiver.start(UDP_PORT, (fileName, fileData) -> {
-            Platform.runLater(() -> addFileTransferMessage(fileName, fileData, true));
-        }, (log) -> {});
+        new Thread(() -> {
+            try {
+                java.net.DatagramSocket socket = new java.net.DatagramSocket(null);
+                socket.setReuseAddress(true);
+                socket.bind(new java.net.InetSocketAddress(UDP_PORT));
+
+                byte[] buffer = new byte[65507];
+                while (true) {
+                    java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length);
+                    socket.receive(packet);
+
+                    byte[] data = java.util.Arrays.copyOf(packet.getData(), packet.getLength());
+                    String msg = new String(data, java.nio.charset.StandardCharsets.UTF_8).trim();
+
+                    if (msg.startsWith("LOGIN:")) {
+                        updateFriendList(msg.substring(6));
+                    } else {
+                        // QUAN TRỌNG: Phải dùng Platform.runLater để vẽ lên giao diện
+                        Platform.runLater(() -> {
+                            // Hiển thị khung tải file bên máy người nhận (isIncoming = true)
+                            addFileTransferMessage("File_Nhan_Duoc.dat", data, true);
+                            addSystemMessage("Bạn nhận được một file mới!");
+                        });
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+        
+    private void updateFriendList(String name) {
+        if (name == null || name.equals(username)) return;
+        
+        Platform.runLater(() -> {
+            if (!friendList.getItems().contains(name)) {
+                friendList.getItems().add(name);
+                System.out.println("Đã thêm " + name + " vào danh sách online.");
+            }
+        });
+    }
+
+    private void broadcastLogin() {
+        new Thread(() -> {
+            try { Thread.sleep(1000); } catch (InterruptedException e) {}
+
+            try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
+                socket.setBroadcast(true);
+                String loginMsg = "LOGIN:" + username;
+                byte[] sendData = loginMsg.getBytes();
+                
+                java.net.DatagramPacket sendPacket = new java.net.DatagramPacket(
+                    sendData, sendData.length, 
+                    java.net.InetAddress.getByName("255.255.255.255"), UDP_PORT
+                );
+                socket.send(sendPacket);
+                System.out.println("Đã gửi Broadcast chào hỏi: " + loginMsg);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     private void sendUdpFile(Stage stage) {
