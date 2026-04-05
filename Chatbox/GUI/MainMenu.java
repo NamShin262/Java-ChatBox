@@ -145,78 +145,61 @@ public class MainMenu extends Application {
     }
 
     private VBox createLeftPanel() {
-        VBox leftPanel = new VBox(15);
-        leftPanel.setPadding(new Insets(15));
-        leftPanel.setPrefWidth(260);
-        leftPanel.setStyle("-fx-background-color: white; -fx-border-color: #d9dce1;");
+        VBox leftPanel = new VBox(10);
+        leftPanel.setPadding(new Insets(10));
+        leftPanel.setPrefWidth(280);
+        leftPanel.setStyle("-fx-background-color: white; -fx-border-color: transparent #d9dce1 transparent transparent;");
 
-        // 1. PHẦN PROFILE CÁ NHÂN Ở TRÊN CÙNG (Để nhận biết tài khoản của mình)
+        // Profile cá nhân
         HBox profileBox = new HBox(12);
         profileBox.setAlignment(Pos.CENTER_LEFT);
-        profileBox.setPadding(new Insets(0, 0, 10, 0));
+        profileBox.setPadding(new Insets(5, 5, 15, 5));
         profileBox.setStyle("-fx-border-color: transparent transparent #f0f2f5 transparent; -fx-border-width: 1;");
 
-        StackPane myProfileAvatar = createAvatar(username);
-        ((Circle) myProfileAvatar.getChildren().get(0)).setRadius(20); 
-        
-        VBox nameInfo = new VBox(2);
-        Label lblMyName = new Label(username);
-        lblMyName.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
-        Label lblStatus = new Label("Đang hoạt động");
-        lblStatus.setStyle("-fx-text-fill: #31a24c; -fx-font-size: 10px;");
-        nameInfo.getChildren().addAll(lblMyName, lblStatus);
-        profileBox.getChildren().addAll(myProfileAvatar, nameInfo);
+        StackPane myAvatar = createAvatar(username);
+        VBox nameInfo = new VBox(0, new Label(username), new Label("Đang hoạt động"));
+        ((Label)nameInfo.getChildren().get(0)).setStyle("-fx-font-weight: bold; -fx-font-size: 15px;");
+        ((Label)nameInfo.getChildren().get(1)).setStyle("-fx-text-fill: #31a24c; -fx-font-size: 11px;");
+        profileBox.getChildren().addAll(myAvatar, nameInfo);
 
-        // 2. TIÊU ĐỀ MESSENGER
-        Label title = new Label("Messenger");
-        title.setStyle("-fx-font-size: 22px; -fx-font-weight: bold; -fx-text-fill: #1877f2;");
+        Label title = new Label("Đoạn chat");
+        title.setStyle("-fx-font-size: 20px; -fx-font-weight: 800; -fx-padding: 5 0 5 5;");
 
-        // 3. DANH SÁCH FRIEND (Tự động thêm Avatar cho người dùng)
         friendList = new ListView<>();
+        // CSS cho ListView để mất viền mặc định và tạo hiệu ứng chọn
+        friendList.setStyle("-fx-background-color: transparent; -fx-background-insets: 0; -fx-padding: 0;");
+        
         friendList.setCellFactory(param -> new ListCell<String>() {
             @Override
             protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) {
+                    setGraphic(null);
                     setText(null);
-                    setGraphic(null);
-                    setStyle(""); 
-                } else if (item.equals("Phòng chat chung")) {
-                    // ĐỐI VỚI PHÒNG CHAT CHUNG: Chỉ hiện chữ, không hiện avatar
-                    setText(item);
-                    setGraphic(null);
-                    setStyle("-fx-font-weight: bold; -fx-padding: 10 5;");
+                    setStyle("-fx-background-color: transparent;");
                 } else {
-                    // ĐỐI VỚI TÊN NGƯỜI DÙNG KHÁC: Tự động thêm Avatar bên cạnh
-                    HBox cellBox = new HBox(10);
-                    cellBox.setAlignment(Pos.CENTER_LEFT);
-                    cellBox.setPadding(new Insets(5, 0, 5, 0));
+                    HBox cell = new HBox(10);
+                    cell.setAlignment(Pos.CENTER_LEFT);
+                    cell.setPadding(new Insets(8, 10, 8, 10));
                     
-                    // Gọi hàm createAvatar để tạo hình tròn có chữ cái đầu
-                    StackPane userAvatar = createAvatar(item);
-                    ((Circle) userAvatar.getChildren().get(0)).setRadius(16); // Avatar trong list nhỏ hơn một chút
-                    ((Label) userAvatar.getChildren().get(1)).setStyle("-fx-font-size: 12px; -fx-text-fill: white;");
+                    StackPane avt = createAvatar(item);
+                    ((Circle)avt.getChildren().get(0)).setRadius(18);
+                    Label name = new Label(item);
+                    name.setStyle("-fx-font-weight: 500; -fx-font-size: 14px;");
                     
-                    Label nameLabel = new Label(item);
-                    cellBox.getChildren().addAll(userAvatar, nameLabel);
+                    cell.getChildren().addAll(avt, name);
+                    setGraphic(cell);
                     
-                    setGraphic(cellBox);
-                    setText(null); // Xóa text mặc định để dùng Graphic (HBox)
-                    setStyle("-fx-padding: 5 5;");
+                    // Hiệu ứng khi được chọn hoặc di chuột qua
+                    selectedProperty().addListener((obs, wasSelected, isNowSelected) -> {
+                        if (isNowSelected) setStyle("-fx-background-color: #e7f3ff; -fx-background-radius: 10;");
+                        else setStyle("-fx-background-color: transparent;");
+                    });
                 }
             }
         });
 
-        // Thêm các mục vào danh sách
         friendList.getItems().add("Phòng chat chung");
-        // Khi có người dùng mới tham gia, bạn chỉ cần dùng: friendList.getItems().add(tenNguoiDung);
-        // Nó sẽ tự động chạy vào phần 'else' ở trên để vẽ Avatar.
-
-        friendList.getSelectionModel().selectFirst();
-        friendList.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
-            if (newVal != null) chatHeaderName.setText(newVal);
-        });
-
         VBox.setVgrow(friendList, Priority.ALWAYS);
         leftPanel.getChildren().addAll(profileBox, title, friendList);
         return leftPanel;
@@ -289,44 +272,30 @@ public class MainMenu extends Application {
     }
 
     private HBox createBottomBar(Stage stage) {
-        HBox bottomBar = new HBox(10);
-        bottomBar.setPadding(new Insets(12));
+        HBox bottomBar = new HBox(8);
+        bottomBar.setPadding(new Insets(15));
         bottomBar.setAlignment(Pos.CENTER_LEFT);
-        bottomBar.setStyle("-fx-background-color: white; -fx-border-color: #d9dce1 transparent transparent transparent;");
+        bottomBar.setStyle("-fx-background-color: white;");
 
-        Button emojiBtn = new Button("😊");
-        Button fileBtn = new Button("📎");
-        Button sendBtn = new Button("Gửi");
-
-        styleIconButton(emojiBtn);
-        styleIconButton(fileBtn);
-
-        sendBtn.setStyle(
-            "-fx-background-color: #1877f2;" +
-            "-fx-text-fill: white;" +
-            "-fx-font-weight: bold;" +
-            "-fx-background-radius: 20;" +
-            "-fx-padding: 10 18;"
-        );
+        Button fileBtn = new Button("⊕"); // Dùng ký tự đặc biệt nhìn sang hơn
+        fileBtn.setStyle("-fx-background-color: #f0f2f5; -fx-background-radius: 50; -fx-font-size: 16px; -fx-text-fill: #1877f2; -fx-min-width: 35; -fx-min-height: 35;");
 
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
-        messageField.setStyle(
-            "-fx-background-color: #f0f2f5;" +
-            "-fx-background-radius: 20;" +
-            "-fx-padding: 10 15;"
-        );
+        messageField.setStyle("-fx-background-color: #f0f2f5; -fx-background-radius: 25; -fx-padding: 10 20; -fx-font-size: 14px;");
         HBox.setHgrow(messageField, Priority.ALWAYS);
 
-        emojiBtn.setOnAction(e -> messageField.appendText("😊"));
+        Button sendBtn = new Button("➤");
+        sendBtn.setStyle("-fx-background-color: transparent; -fx-text-fill: #1877f2; -fx-font-size: 20px; -fx-cursor: hand;");
+
         fileBtn.setOnAction(e -> sendUdpFile(stage));
         sendBtn.setOnAction(e -> sendMessage());
         messageField.setOnAction(e -> sendMessage());
 
-        bottomBar.getChildren().addAll(emojiBtn, fileBtn, messageField, sendBtn);
+        bottomBar.getChildren().addAll(fileBtn, messageField, sendBtn);
         return bottomBar;
     }
-
+    
     private void startTcpServer() {
         if (tcpServer != null) return;
         tcpServer = new TcpChatServer(TCP_PORT);
@@ -446,13 +415,16 @@ public class MainMenu extends Application {
 
     private void addSentMessage(String text) {
         MessageBubble bubble = new MessageBubble(text, true);
-        StackPane myAvatar = createAvatar(username);
-        myAvatar.setScaleX(0.7); 
-        myAvatar.setScaleY(0.7);
+        // Tinh chỉnh bubble: Xanh dương gradient, chữ trắng, bo góc mạnh
+        bubble.setStyle("-fx-background-color: linear-gradient(to bottom right, #0084ff, #0072ff);" +
+                        "-fx-background-radius: 18 18 2 18; -fx-padding: 8 12; -fx-text-fill: white;");
 
-        HBox container = new HBox(5, bubble, myAvatar);
+        StackPane myAvatar = createAvatar(username);
+        myAvatar.setScaleX(0.7); myAvatar.setScaleY(0.7);
+
+        HBox container = new HBox(8, bubble, myAvatar);
         container.setAlignment(Pos.CENTER_RIGHT);
-        container.setPadding(new Insets(2, 10, 2, 10));
+        container.setPadding(new Insets(5, 10, 5, 10));
         
         messageContainer.getChildren().add(container);
         scrollToBottom();
@@ -467,13 +439,16 @@ public class MainMenu extends Application {
         }
 
         MessageBubble bubble = new MessageBubble(content, false);
-        StackPane senderAvatar = createAvatar(senderName);
-        senderAvatar.setScaleX(0.7);
-        senderAvatar.setScaleY(0.7);
+        // Tinh chỉnh bubble nhận: Xám nhạt, bo góc mềm
+        bubble.setStyle("-fx-background-color: #e4e6eb; -fx-background-radius: 18 18 18 2; " +
+                        "-fx-padding: 8 12; -fx-text-fill: black;");
 
-        HBox container = new HBox(5, senderAvatar, bubble);
+        StackPane senderAvatar = createAvatar(senderName);
+        senderAvatar.setScaleX(0.7); senderAvatar.setScaleY(0.7);
+
+        HBox container = new HBox(8, senderAvatar, bubble);
         container.setAlignment(Pos.CENTER_LEFT);
-        container.setPadding(new Insets(2, 10, 2, 10));
+        container.setPadding(new Insets(5, 10, 5, 10));
         
         messageContainer.getChildren().add(container);
         scrollToBottom();
