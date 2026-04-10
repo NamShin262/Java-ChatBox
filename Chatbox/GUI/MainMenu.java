@@ -60,7 +60,6 @@ public class MainMenu extends Application {
             }
         }).start();
 
-        // Khởi động nhận UDP với cơ chế tự tìm Port trống
         startUdpReceiver();
 
         Platform.runLater(() -> {
@@ -74,16 +73,16 @@ public class MainMenu extends Application {
             boolean bound = false;
             java.net.DatagramSocket socket = null;
             
-            // Thêm một chút delay nhỏ để tránh 2 tiến trình tranh nhau cùng 1 miligiây
-            try { Thread.sleep((long)(Math.random() * 200)); } catch(Exception e) {}
+            // Random delay nhẹ để tránh xung đột khi mở 2 app cùng lúc trên 1 máy
+            try { Thread.sleep((long)(Math.random() * 300)); } catch(Exception e) {}
 
-            while (!bound && currentUdpPort < 6100) {
+            // Tìm port trống từ 6000 trở đi
+            while (!bound && currentUdpPort < 6200) {
                 try {
-                    // Constructor này sẽ báo lỗi ngay nếu port 6000 đã có người dùng
                     socket = new java.net.DatagramSocket(currentUdpPort); 
                     bound = true;
                 } catch (Exception e) {
-                    currentUdpPort++; // Port bị chiếm -> tăng lên 6001
+                    currentUdpPort++; 
                 }
             }
             
@@ -92,19 +91,40 @@ public class MainMenu extends Application {
             final int finalPort = currentUdpPort;
             Platform.runLater(() -> addSystemMessage("Bạn đang nhận file tại Port: " + finalPort));
 
-            // ... các code nhận dữ liệu bên dưới giữ nguyên như của bạn ...
             try {
-                byte[] buffer = new byte[65507];
+                byte[] buffer = new byte[65507]; // Kích thước tối đa gói tin UDP
                 while (true) {
                     java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length);
-                    socket.receive(packet);
-                    // Xử lý data... (giữ nguyên code của bạn)
+                    socket.receive(packet); // Chương trình sẽ đợi ở đây cho đến khi có dữ liệu đến
+
+                    // 1. Lấy dữ liệu thực tế nhận được
+                    byte[] receivedData = java.util.Arrays.copyOf(packet.getData(), packet.getLength());
+                    
+                    // 2. Kiểm tra xem đây là gói tin LOGIN hay là FILE
+                    String contentAsText = new String(receivedData);
+
+                    if (contentAsText.startsWith("LOGIN:")) {
+                        // Nếu là tin nhắn LOGIN: Chỉ cập nhật danh sách bạn bè, KHÔNG hiện file
+                        String remoteUser = contentAsText.split(":")[1];
+                        updateFriendList(remoteUser);
+                    } else {
+                        // Nếu KHÔNG phải LOGIN: Đây chính là file thực sự
+                        String fileName = "file_nhan_duoc_" + (System.currentTimeMillis() % 1000) + ".dat";
+                        
+                        // Đưa lên giao diện
+                        Platform.runLater(() -> {
+                            addFileTransferMessage(fileName, receivedData, true);
+                        });
+                    }
                 }
-            } catch (Exception e) { e.printStackTrace(); }
+            } catch (Exception e) { 
+                // Nếu có lỗi BindException hoặc Socket closed thì in ra để debug
+                System.err.println("Lỗi UDP Receiver: " + e.getMessage());
+            } finally {
+                if (socket != null && !socket.isClosed()) socket.close();
+            }
         }).start();
     }
-
-    // --- CÁC HÀM GIAO DIỆN GIỮ NGUYÊN PHONG CÁCH CŨ CỦA BẠN ---
 
     private void connectAuto(String host) {
         tcpClient = new TcpChatClient();
@@ -117,7 +137,6 @@ public class MainMenu extends Application {
                 if (senderName.equals(username)) addSentMessage(content);
                 else {
                     addReceivedMessage(senderName + ": " + content);
-                    updateFriendList(senderName);
                 }
             }
         }));
@@ -186,26 +205,22 @@ public class MainMenu extends Application {
         friendList.getItems().add("Phòng chat chung");
         VBox.setVgrow(friendList, Priority.ALWAYS);
         leftPanel.getChildren().addAll(profileBox, title, friendList);
+
         friendList.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
-        if (newVal != null) {
-            Platform.runLater(() -> {
-                // 1. Lưu lại những gì đang hiện trên màn hình vào kho của người cũ (oldVal)
-                if (oldVal != null) {
-                    privateHistory.put(oldVal, new java.util.ArrayList<>(messageContainer.getChildren()));
-                }
-
-                // 2. Đổi tên tiêu đề phòng chat
-                chatHeaderName.setText(newVal);
-
-                // 3. Xóa màn hình cũ và nạp tin nhắn từ kho của người mới (newVal)
-                messageContainer.getChildren().clear();
-                if (privateHistory.containsKey(newVal)) {
-                    messageContainer.getChildren().addAll(privateHistory.get(newVal));
-                }
-                scrollToBottom();
-            });
-        }
-    });
+            if (newVal != null) {
+                Platform.runLater(() -> {
+                    if (oldVal != null) {
+                        privateHistory.put(oldVal, new java.util.ArrayList<>(messageContainer.getChildren()));
+                    }
+                    chatHeaderName.setText(newVal);
+                    messageContainer.getChildren().clear();
+                    if (privateHistory.containsKey(newVal)) {
+                        messageContainer.getChildren().addAll(privateHistory.get(newVal));
+                    }
+                    scrollToBottom();
+                });
+            }
+        });
         return leftPanel;
     }
 
@@ -254,8 +269,6 @@ public class MainMenu extends Application {
         return bottomBar;
     }
 
-    // --- CÁC HÀM XỬ LÝ TIN NHẮN & FILE ---
-
     private void sendMessage() {
         String text = messageField.getText().trim();
         if (!text.isEmpty() && tcpClient != null) {
@@ -273,19 +286,15 @@ public class MainMenu extends Application {
     }
 
     private void addReceivedMessage(String text) {
-        // 1. Lấy tên người gửi từ nội dung tin nhắn (Ví dụ: "nam: alo hùng ơi")
         String sender = text.contains(": ") ? text.substring(0, text.indexOf(": ")) : "Hệ thống";
         String content = text.contains(": ") ? text.substring(text.indexOf(": ") + 2) : text;
 
-        // --- GIỮ NGUYÊN PHẦN CODE HIỂN THỊ TIN NHẮN CỦA BẠN ---
         Label lbl = new Label(content); lbl.setWrapText(true);
         lbl.setStyle("-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
         HBox hb = new HBox(lbl); hb.setAlignment(Pos.CENTER_LEFT);
 
-        // 2. THÊM DÒNG NÀY: Giúp bên Hùng tự hiện tên Nam vào danh sách bên trái
         updateFriendList(sender); 
 
-        // --- PHẦN LOGIC PHÂN LOẠI TIN NHẮN RIÊNG/CHUNG ĐÃ CÓ ---
         if (chatHeaderName.getText().equals(sender) || chatHeaderName.getText().equals("Phòng chat chung")) {
             messageContainer.getChildren().add(hb);
             scrollToBottom();
@@ -294,19 +303,17 @@ public class MainMenu extends Application {
         }
     }
 
-    // Cải tiến hàm này để hiển thị Ảnh trực tiếp nếu là file ảnh
     private void addFileTransferMessage(String fileName, byte[] data, boolean isIncoming) {
         VBox box = new VBox(5);
         box.setAlignment(isIncoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
         
-        // Hiển thị ảnh nếu đuôi file là ảnh
         String ext = fileName.toLowerCase();
         if (ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".gif")) {
             try {
                 javafx.scene.image.Image img = new javafx.scene.image.Image(new java.io.ByteArrayInputStream(data));
                 javafx.scene.image.ImageView iv = new javafx.scene.image.ImageView(img);
                 iv.setFitWidth(200); iv.setPreserveRatio(true);
-                iv.setStyle("-fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.1), 10, 0, 0, 0); -fx-border-radius: 10;");
+                iv.setStyle("-fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.1), 10, 0, 0, 0);");
                 box.getChildren().add(iv);
             } catch (Exception e) {}
         }
@@ -325,15 +332,14 @@ public class MainMenu extends Application {
     }
 
     private void sendUdpFile(Stage stage) {
-        // Nhập IP:Port để gửi đúng cửa sổ đang mở trên cùng máy
-        TextInputDialog id = new TextInputDialog("127.0.0.1:" + currentUdpPort);
+        TextInputDialog id = new TextInputDialog("127.0.0.1:6001");
         id.setHeaderText("Gửi file đến IP và Port máy nhận:");
-        id.setContentText("Ví dụ: 127.0.0.1:6000 hoặc 127.0.0.1:6001");
+        id.setContentText("Nhập IP:Port (Ví dụ máy kia báo 6001 thì nhập 6001):");
         
         id.showAndWait().ifPresent(input -> {
             try {
                 String host = input.split(":")[0];
-                int port = input.contains(":") ? Integer.parseInt(input.split(":")[1]) : 6000;
+                int port = Integer.parseInt(input.split(":")[1]);
                 
                 FileChooser fc = new FileChooser();
                 File f = fc.showOpenDialog(stage);
@@ -358,12 +364,10 @@ public class MainMenu extends Application {
     private void broadcastLogin() {
         new Thread(() -> {
             try {
-                Thread.sleep(1000); // Đợi app khởi động xong
+                Thread.sleep(1000);
                 try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
                     socket.setBroadcast(true);
                     byte[] sendData = ("LOGIN:" + username).getBytes();
-                    
-                    // Gửi lời chào đến tất cả các Port có thể có (từ 6000 đến 6010)
                     for (int p = 6000; p <= 6010; p++) {
                         java.net.DatagramPacket pack = new java.net.DatagramPacket(
                             sendData, sendData.length, 
@@ -372,14 +376,14 @@ public class MainMenu extends Application {
                         socket.send(pack);
                     }
                 }
-            } catch (Exception e) { e.printStackTrace(); }
+            } catch (Exception e) {}
         }).start();
     }
     
     private void addSystemMessage(String text) {
         Label l = new Label(text); l.setStyle("-fx-text-fill: gray; -fx-font-style: italic; -fx-font-size: 11px;");
         HBox hb = new HBox(l); hb.setAlignment(Pos.CENTER);
-        messageContainer.getChildren().add(hb);
+        Platform.runLater(() -> messageContainer.getChildren().add(hb));
     }
 
     private void scrollToBottom() { Platform.runLater(() -> messageScroll.setVvalue(1.0)); }
