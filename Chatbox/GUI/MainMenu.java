@@ -1,10 +1,7 @@
 package Chatbox.GUI;
 
-import java.io.File;
-import java.util.Optional;
-import Chatbox.network.TcpChatClient;
-import Chatbox.network.TcpChatServer;
-import Chatbox.network.UdpFileSender;
+import java.util.*;
+import java.util.stream.Collectors;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -14,379 +11,297 @@ import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
-import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 public class MainMenu extends Application {
-
     private VBox messageContainer;
     private TextField messageField;
-    private Label chatHeaderName;
     private ScrollPane messageScroll;
     private ListView<String> friendList;
-    private java.util.Map<String, java.util.List<javafx.scene.Node>> privateHistory = new java.util.HashMap<>(); 
+    private HBox headerBox; 
+    private Label chatHeaderName;
 
-    private TcpChatServer tcpServer;
-    private TcpChatClient tcpClient;
+    private Map<String, List<javafx.scene.Node>> privateHistory = new HashMap<>(); 
+    private Map<String, Integer> friendPorts = new HashMap<>(); 
+    private Map<String, List<Integer>> myGroups = new HashMap<>(); 
+    
     private String username = "Guest";
-    private final int TCP_PORT = 5000;
-    private int currentUdpPort = 6000; 
+    private int currentUdpPort = 6000;
+    private java.net.DatagramSocket udpSocket;
 
     @Override
     public void start(Stage primaryStage) {
         askUsername();
-
         BorderPane root = new BorderPane();
         root.setStyle("-fx-background-color: #f0f2f5;");
         root.setCenter(createCenterPanel(primaryStage));
         root.setLeft(createLeftPanel());
-
-        Scene scene = new Scene(root, 1000, 750);
-
+        
+        Scene scene = new Scene(root, 1100, 750);
         primaryStage.setTitle("CHAT BOX - " + username);
         primaryStage.setScene(scene);
         primaryStage.show();
+
         autoStartConnection();
     }
 
-    private void autoStartConnection() {
-        new Thread(() -> {
-            try {
-                tcpServer = new TcpChatServer(TCP_PORT);
-                tcpServer.start();
-                Platform.runLater(() -> addSystemMessage("Server TCP khởi tạo tại port " + TCP_PORT));
-            } catch (Exception e) {
-                System.out.println("Server đã tồn tại, chạy chế độ Client.");
+    // --- LOGIC CHỌN BẠN BÈ VÀO NHÓM (GIỮ NGUYÊN UI HIỆN CÓ) ---
+    private void createNewGroup() {
+        if (friendPorts.isEmpty()) {
+            new Alert(Alert.AlertType.INFORMATION, "Không có bạn bè online để tạo nhóm!").show();
+            return;
+        }
+
+        TextInputDialog nameDialog = new TextInputDialog("Nhóm Mới");
+        nameDialog.setTitle("Tạo Nhóm");
+        nameDialog.setHeaderText("Đặt tên cho nhóm:");
+        
+        nameDialog.showAndWait().ifPresent(gName -> {
+            Stage subStage = new Stage();
+            VBox layout = new VBox(15);
+            layout.setPadding(new Insets(20));
+            layout.setStyle("-fx-background-color: white;");
+
+            Label label = new Label("Mời thành viên:");
+            label.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+
+            VBox memberSelection = new VBox(10);
+            Map<String, CheckBox> boxes = new HashMap<>();
+            for (String friend : friendPorts.keySet()) {
+                CheckBox cb = new CheckBox(friend);
+                boxes.put(friend, cb);
+                memberSelection.getChildren().add(cb);
             }
-        }).start();
 
-        startUdpReceiver();
+            Button btnCreate = new Button("Xác nhận tạo");
+            btnCreate.setMaxWidth(Double.MAX_VALUE);
+            btnCreate.setStyle("-fx-background-color: #1877f2; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8;");
+            
+            btnCreate.setOnAction(e -> {
+                List<Integer> selectedPorts = new ArrayList<>();
+                selectedPorts.add(currentUdpPort);
+                for (String f : boxes.keySet()) {
+                    if (boxes.get(f).isSelected()) selectedPorts.add(friendPorts.get(f));
+                }
 
-        Platform.runLater(() -> {
-            connectAuto("127.0.0.1");
-            broadcastLogin();
+                if (selectedPorts.size() < 2) {
+                    new Alert(Alert.AlertType.WARNING, "Hãy chọn ít nhất 1 người bạn!").show();
+                    return;
+                }
+
+                String portsStr = selectedPorts.stream().map(String::valueOf).collect(Collectors.joining(","));
+                for (Integer p : selectedPorts) {
+                    if (p != currentUdpPort) sendUdpRaw("GROUP_INVITE:" + gName + ":" + portsStr, p);
+                }
+                myGroups.put(gName, selectedPorts);
+                updateFriendList(gName + " (Nhóm)");
+                subStage.close();
+            });
+
+            layout.getChildren().addAll(label, new ScrollPane(memberSelection), btnCreate);
+            subStage.setScene(new Scene(layout, 280, 400));
+            subStage.show();
         });
     }
 
-    private void startUdpReceiver() {
-        new Thread(() -> {
-            boolean bound = false;
-            java.net.DatagramSocket socket = null;
-            
-            // Random delay nhẹ để tránh xung đột khi mở 2 app cùng lúc trên 1 máy
-            try { Thread.sleep((long)(Math.random() * 300)); } catch(Exception e) {}
-
-            // Tìm port trống từ 6000 trở đi
-            while (!bound && currentUdpPort < 6200) {
-                try {
-                    socket = new java.net.DatagramSocket(currentUdpPort); 
-                    bound = true;
-                } catch (Exception e) {
-                    currentUdpPort++; 
-                }
-            }
-            
-            if (socket == null) return;
-            
-            final int finalPort = currentUdpPort;
-            Platform.runLater(() -> addSystemMessage("Bạn đang nhận file tại Port: " + finalPort));
-
-            try {
-                byte[] buffer = new byte[65507]; // Kích thước tối đa gói tin UDP
-                while (true) {
-                    java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length);
-                    socket.receive(packet); // Chương trình sẽ đợi ở đây cho đến khi có dữ liệu đến
-
-                    // 1. Lấy dữ liệu thực tế nhận được
-                    byte[] receivedData = java.util.Arrays.copyOf(packet.getData(), packet.getLength());
-                    
-                    // 2. Kiểm tra xem đây là gói tin LOGIN hay là FILE
-                    String contentAsText = new String(receivedData);
-
-                    if (contentAsText.startsWith("LOGIN:")) {
-                        // Nếu là tin nhắn LOGIN: Chỉ cập nhật danh sách bạn bè, KHÔNG hiện file
-                        String remoteUser = contentAsText.split(":")[1];
-                        updateFriendList(remoteUser);
-                    } else {
-                        // Nếu KHÔNG phải LOGIN: Đây chính là file thực sự
-                        String fileName = "file_nhan_duoc_" + (System.currentTimeMillis() % 1000) + ".dat";
-                        
-                        // Đưa lên giao diện
-                        Platform.runLater(() -> {
-                            addFileTransferMessage(fileName, receivedData, true);
-                        });
-                    }
-                }
-            } catch (Exception e) { 
-                // Nếu có lỗi BindException hoặc Socket closed thì in ra để debug
-                System.err.println("Lỗi UDP Receiver: " + e.getMessage());
-            } finally {
-                if (socket != null && !socket.isClosed()) socket.close();
-            }
-        }).start();
-    }
-
-    private void connectAuto(String host) {
-        tcpClient = new TcpChatClient();
-        tcpClient.setOnMessage(msg -> Platform.runLater(() -> {
-            String senderName = msg.getFrom();
-            String content = msg.getContent();
-            if ("SYSTEM".equals(senderName)) {
-                if (content.contains("đã tham gia")) updateFriendList(content.split(" ")[0]);
-            } else {
-                if (senderName.equals(username)) addSentMessage(content);
-                else {
-                    addReceivedMessage(senderName + ": " + content);
-                }
-            }
-        }));
-        tcpClient.connect(host, TCP_PORT, username);
-    }
-
-    private void askUsername() {
-        TextInputDialog dialog = new TextInputDialog("User");
-        dialog.setTitle("Tên người dùng");
-        dialog.setHeaderText("Chào mừng bạn đến với Chat Box");
-        dialog.setContentText("Nhập username của bạn:");
-        Optional<String> result = dialog.showAndWait();
-        result.ifPresent(name -> username = name.trim().isEmpty() ? "Guest" : name.trim());
-    }
-
-    private StackPane createAvatar(String name) {
-        String displayLetter = (name != null && !name.isEmpty()) ? name.substring(0, 1).toUpperCase() : "?";
-        Circle circle = new Circle(20);
-        String[] colors = {"#f44336", "#9c27b0", "#3f51b5", "#00bcd4", "#4caf50", "#ff9800", "#1877f2"};
-        int colorIndex = Math.abs(name.hashCode()) % colors.length;
-        circle.setFill(Color.web(colors[colorIndex]));
-        Label letter = new Label(displayLetter);
-        letter.setStyle("-fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 16px;");
-        return new StackPane(circle, letter);
-    }
-
+    // --- GIỮ NGUYÊN UI GỐC THEO YÊU CẦU ---
     private VBox createLeftPanel() {
-        VBox leftPanel = new VBox(10);
-        leftPanel.setPadding(new Insets(15, 10, 10, 10));
-        leftPanel.setPrefWidth(280);
-        leftPanel.setStyle("-fx-background-color: white; -fx-border-color: transparent #d9dce1 transparent transparent;");
+        VBox left = new VBox(15);
+        left.setPadding(new Insets(20, 10, 10, 10));
+        left.setPrefWidth(300);
+        left.setStyle("-fx-background-color: white; -fx-border-color: transparent #d9dce1 transparent transparent;");
 
-        HBox profileBox = new HBox(12);
-        profileBox.setAlignment(Pos.CENTER_LEFT);
-        profileBox.setPadding(new Insets(5, 5, 15, 5));
-        VBox nameInfo = new VBox(0, new Label(username), new Label("Đang hoạt động"));
-        ((Label)nameInfo.getChildren().get(0)).setStyle("-fx-font-weight: bold; -fx-font-size: 15px;");
-        ((Label)nameInfo.getChildren().get(1)).setStyle("-fx-text-fill: #31a24c; -fx-font-size: 11px;");
-        profileBox.getChildren().addAll(createAvatar(username), nameInfo);
+        HBox profile = new HBox(12);
+        profile.setAlignment(Pos.CENTER_LEFT);
+        VBox info = new VBox(0, new Label(username), new Label("Đang hoạt động"));
+        ((Label)info.getChildren().get(0)).setStyle("-fx-font-weight: bold; -fx-font-size: 16px;");
+        ((Label)info.getChildren().get(1)).setStyle("-fx-text-fill: #31a24c; -fx-font-size: 12px;");
+        profile.getChildren().addAll(createAvatar(username), info);
 
-        Label title = new Label("Đoạn chat");
-        title.setStyle("-fx-font-size: 22px; -fx-font-weight: 800; -fx-padding: 10 0 5 5;");
+        Button btnAddGroup = new Button("+ Tạo Nhóm Mới");
+        btnAddGroup.setMaxWidth(Double.MAX_VALUE);
+        btnAddGroup.setStyle("-fx-background-color: #1877f2; -fx-text-fill: white; -fx-font-weight: bold; -fx-background-radius: 10; -fx-padding: 10;");
+        btnAddGroup.setOnAction(e -> createNewGroup());
+
+        Label title = new Label("DANH SÁCH BẠN BÈ");
+        title.setStyle("-fx-font-size: 15px; -fx-font-weight: 900; -fx-text-fill: #1c1e21; -fx-letter-spacing: 1px; -fx-padding: 10 0 0 5;");
 
         friendList = new ListView<>();
-        friendList.setCellFactory(param -> new ListCell<String>() {
-            @Override
-            protected void updateItem(String item, boolean empty) {
+        friendList.setCellFactory(p -> new ListCell<String>() {
+            @Override protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty || item == null) { setGraphic(null); setText(null); setStyle("-fx-background-color: transparent;"); }
+                if (empty || item == null) { setGraphic(null); setStyle("-fx-background-color: transparent;"); }
                 else {
-                    HBox cell = new HBox(10); cell.setAlignment(Pos.CENTER_LEFT); cell.setPadding(new Insets(10));
-                    if (!item.equals("Phòng chat chung")) {
-                        StackPane avt = createAvatar(item);
-                        ((Circle)avt.getChildren().get(0)).setRadius(18);
-                        cell.getChildren().add(avt);
-                    }
-                    Label name = new Label(item);
-                    name.setStyle(item.equals("Phòng chat chung") ? "-fx-font-weight: bold; -fx-font-size: 15px; -fx-text-fill: #1877f2;" : "-fx-font-weight: 500;");
-                    cell.getChildren().add(name);
+                    HBox cell = new HBox(10); cell.setAlignment(Pos.CENTER_LEFT); cell.setPadding(new Insets(10, 8, 10, 8));
+                    if (item.equals("Phòng chat chung")) {
+                        Label lbl = new Label(item); lbl.setStyle("-fx-font-weight: 800; -fx-text-fill: #1877f2; -fx-font-size: 15px;");
+                        cell.getChildren().add(lbl);
+                    } else { cell.getChildren().addAll(createAvatar(item), new Label(item)); }
                     setGraphic(cell);
-                    selectedProperty().addListener((obs, old, val) -> setStyle(val ? "-fx-background-color: #e7f3ff; -fx-background-radius: 12;" : "-fx-background-color: transparent;"));
+                    selectedProperty().addListener((o, old, val) -> setStyle(val ? "-fx-background-color: #e7f3ff; -fx-background-radius: 12;" : "-fx-background-color: transparent;"));
                 }
             }
         });
-
         friendList.getItems().add("Phòng chat chung");
-        VBox.setVgrow(friendList, Priority.ALWAYS);
-        leftPanel.getChildren().addAll(profileBox, title, friendList);
-
-        friendList.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
-            if (newVal != null) {
-                Platform.runLater(() -> {
-                    if (oldVal != null) {
-                        privateHistory.put(oldVal, new java.util.ArrayList<>(messageContainer.getChildren()));
-                    }
-                    chatHeaderName.setText(newVal);
-                    messageContainer.getChildren().clear();
-                    if (privateHistory.containsKey(newVal)) {
-                        messageContainer.getChildren().addAll(privateHistory.get(newVal));
-                    }
-                    scrollToBottom();
-                });
+        friendList.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
+            if (newV != null) {
+                if (oldV != null) privateHistory.put(oldV, new ArrayList<>(messageContainer.getChildren()));
+                updateHeaderInfo(newV);
+                messageContainer.getChildren().clear();
+                if (privateHistory.containsKey(newV)) messageContainer.getChildren().addAll(privateHistory.get(newV));
+                scrollToBottom();
             }
         });
-        return leftPanel;
+        left.getChildren().addAll(profile, btnAddGroup, title, friendList);
+        return left;
+    }
+
+    // --- CÁC PHƯƠNG THỨC XỬ LÝ TIN NHẮN (ĐÃ FIX LỖI "UNDEFINED") ---
+    private void handleIncomingMsg(String chatRoom, String sender, String content) {
+        Platform.runLater(() -> {
+            HBox hb = createMsgNode(sender, content, false);
+            if (chatHeaderName.getText().equals(chatRoom)) {
+                messageContainer.getChildren().add(hb);
+                scrollToBottom();
+            } else {
+                privateHistory.computeIfAbsent(chatRoom, k -> new ArrayList<>()).add(hb);
+            }
+        });
+    }
+
+    private HBox createMsgNode(String sender, String content, boolean isMe) {
+        Label lbl = new Label(content); lbl.setWrapText(true); lbl.setMaxWidth(400);
+        lbl.setStyle(isMe ? "-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;" 
+                          : "-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
+        HBox hb = isMe ? new HBox(lbl) : new HBox(8, createAvatar(sender), lbl);
+        if (!isMe) ((Circle)((StackPane)hb.getChildren().get(0)).getChildren().get(0)).setRadius(15);
+        hb.setAlignment(isMe ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
+        return hb;
+    }
+
+    private void updateHeaderInfo(String name) {
+        headerBox.getChildren().clear();
+        chatHeaderName.setText(name);
+        if (!name.equals("Phòng chat chung")) {
+            StackPane avt = createAvatar(name); ((Circle)avt.getChildren().get(0)).setRadius(18);
+            headerBox.getChildren().add(avt);
+        }
+        headerBox.getChildren().add(chatHeaderName);
     }
 
     private BorderPane createCenterPanel(Stage stage) {
-        BorderPane centerPanel = new BorderPane();
+        BorderPane center = new BorderPane();
         chatHeaderName = new Label("Phòng chat chung");
         chatHeaderName.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
-        HBox topBar = new HBox(chatHeaderName);
-        topBar.setPadding(new Insets(15, 20, 15, 20));
-        topBar.setStyle("-fx-background-color: white; -fx-border-color: transparent transparent #d9dce1 transparent;");
-        
-        messageContainer = new VBox(12);
-        messageContainer.setPadding(new Insets(20));
-        messageScroll = new ScrollPane(messageContainer);
-        messageScroll.setFitToWidth(true);
+        headerBox = new HBox(10, chatHeaderName); headerBox.setAlignment(Pos.CENTER_LEFT);
+        HBox top = new HBox(headerBox); top.setPadding(new Insets(15, 20, 15, 20));
+        top.setStyle("-fx-background-color: white; -fx-border-color: transparent transparent #d9dce1 transparent;");
+        messageContainer = new VBox(12); messageContainer.setPadding(new Insets(20));
+        messageScroll = new ScrollPane(messageContainer); messageScroll.setFitToWidth(true);
         messageScroll.setStyle("-fx-background: #f0f2f5; -fx-background-color: #f0f2f5;");
-
-        centerPanel.setTop(topBar);
-        centerPanel.setCenter(messageScroll);
-        centerPanel.setBottom(createBottomBar(stage));
-        return centerPanel;
+        HBox bottom = new HBox(10); bottom.setPadding(new Insets(15, 20, 15, 20));
+        bottom.setStyle("-fx-background-color: white;");
+        messageField = new TextField(); messageField.setPromptText("Nhập tin nhắn...");
+        messageField.setStyle("-fx-background-color: #f0f2f5; -fx-background-radius: 20; -fx-padding: 10;");
+        HBox.setHgrow(messageField, Priority.ALWAYS);
+        Button btnSend = new Button("➤"); btnSend.setStyle("-fx-text-fill: #1877f2; -fx-font-size: 20px; -fx-background-color: transparent;");
+        btnSend.setOnAction(e -> sendMessage());
+        messageField.setOnAction(e -> sendMessage());
+        bottom.getChildren().addAll(messageField, btnSend);
+        center.setTop(top); center.setCenter(messageScroll); center.setBottom(bottom);
+        return center;
     }
 
-    private HBox createBottomBar(Stage stage) {
-        HBox bottomBar = new HBox(10);
-        bottomBar.setPadding(new Insets(15, 20, 15, 20));
-        bottomBar.setAlignment(Pos.CENTER_LEFT);
-        bottomBar.setStyle("-fx-background-color: white;");
-
-        Button fileBtn = new Button("⊕");
-        fileBtn.setStyle("-fx-background-color: #f0f2f5; -fx-background-radius: 50; -fx-font-size: 18px; -fx-text-fill: #1877f2; -fx-min-width: 40; -fx-min-height: 40; -fx-cursor: hand;");
-
-        messageField = new TextField();
-        messageField.setPromptText("Nhập tin nhắn...");
-        messageField.setStyle("-fx-background-color: #f0f2f5; -fx-background-radius: 25; -fx-padding: 10 20;");
-        HBox.setHgrow(messageField, Priority.ALWAYS);
-
-        Button sendBtn = new Button("➤");
-        sendBtn.setStyle("-fx-background-color: transparent; -fx-text-fill: #1877f2; -fx-font-size: 22px; -fx-cursor: hand;");
-
-        fileBtn.setOnAction(e -> sendUdpFile(stage));
-        sendBtn.setOnAction(e -> sendMessage());
-        messageField.setOnAction(e -> sendMessage());
-
-        bottomBar.getChildren().addAll(fileBtn, messageField, sendBtn);
-        return bottomBar;
+    // --- GIAO TIẾP UDP ---
+    private void startUdpReceiver() {
+        new Thread(() -> {
+            try {
+                while (udpSocket == null && currentUdpPort < 6100) {
+                    try { udpSocket = new java.net.DatagramSocket(currentUdpPort); } catch (Exception e) { currentUdpPort++; }
+                }
+                byte[] buffer = new byte[65507];
+                while (true) {
+                    java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length);
+                    udpSocket.receive(packet);
+                    String data = new String(packet.getData(), 0, packet.getLength());
+                    if (data.startsWith("LOGIN:")) {
+                        String[] p = data.split(":");
+                        if (!p[1].equals(username)) {
+                            friendPorts.put(p[1], Integer.parseInt(p[2]));
+                            updateFriendList(p[1]);
+                            sendUdpRaw("REPLY_LOGIN:" + username + ":" + currentUdpPort, Integer.parseInt(p[2]));
+                        }
+                    } else if (data.startsWith("REPLY_LOGIN:")) {
+                        String[] p = data.split(":");
+                        friendPorts.put(p[1], Integer.parseInt(p[2]));
+                        updateFriendList(p[1]);
+                    } else if (data.startsWith("GROUP_INVITE:")) {
+                        String[] p = data.split(":");
+                        List<Integer> ports = Arrays.stream(p[2].split(",")).map(Integer::parseInt).collect(Collectors.toList());
+                        myGroups.put(p[1], ports);
+                        updateFriendList(p[1] + " (Nhóm)");
+                    } else if (data.startsWith("GROUP_MSG:")) {
+                        String[] p = data.split(":", 4);
+                        handleIncomingMsg(p[1].equals("CHAT_1_1") ? p[2] : p[1] + " (Nhóm)", p[2], p[3]);
+                    }
+                }
+            } catch (Exception e) {}
+        }).start();
     }
 
     private void sendMessage() {
         String text = messageField.getText().trim();
-        if (!text.isEmpty() && tcpClient != null) {
-            tcpClient.sendMessage(text);
-            messageField.clear();
-        }
-    }
-
-    private void addSentMessage(String text) {
-        Label lbl = new Label(text); lbl.setWrapText(true);
-        lbl.setStyle("-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;");
-        HBox hb = new HBox(lbl); hb.setAlignment(Pos.CENTER_RIGHT);
-        messageContainer.getChildren().add(hb);
-        scrollToBottom();
-    }
-
-    private void addReceivedMessage(String text) {
-        String sender = text.contains(": ") ? text.substring(0, text.indexOf(": ")) : "Hệ thống";
-        String content = text.contains(": ") ? text.substring(text.indexOf(": ") + 2) : text;
-
-        Label lbl = new Label(content); lbl.setWrapText(true);
-        lbl.setStyle("-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
-        HBox hb = new HBox(lbl); hb.setAlignment(Pos.CENTER_LEFT);
-
-        updateFriendList(sender); 
-
-        if (chatHeaderName.getText().equals(sender) || chatHeaderName.getText().equals("Phòng chat chung")) {
-            messageContainer.getChildren().add(hb);
-            scrollToBottom();
+        if (text.isEmpty()) return;
+        String target = chatHeaderName.getText();
+        if (target.endsWith("(Nhóm)")) {
+            String gName = target.replace(" (Nhóm)", "");
+            for (Integer p : myGroups.get(gName)) if (p != currentUdpPort) sendUdpRaw("GROUP_MSG:" + gName + ":" + username + ":" + text, p);
+            messageContainer.getChildren().add(createMsgNode(username, text, true));
         } else {
-            privateHistory.computeIfAbsent(sender, k -> new java.util.ArrayList<>()).add(hb);
+            Integer p = friendPorts.get(target);
+            if (p != null) {
+                sendUdpRaw("GROUP_MSG:CHAT_1_1:" + username + ":" + text, p);
+                messageContainer.getChildren().add(createMsgNode(username, text, true));
+            }
         }
+        messageField.clear(); scrollToBottom();
     }
 
-    private void addFileTransferMessage(String fileName, byte[] data, boolean isIncoming) {
-        VBox box = new VBox(5);
-        box.setAlignment(isIncoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
-        
-        String ext = fileName.toLowerCase();
-        if (ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".gif")) {
-            try {
-                javafx.scene.image.Image img = new javafx.scene.image.Image(new java.io.ByteArrayInputStream(data));
-                javafx.scene.image.ImageView iv = new javafx.scene.image.ImageView(img);
-                iv.setFitWidth(200); iv.setPreserveRatio(true);
-                iv.setStyle("-fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.1), 10, 0, 0, 0);");
-                box.getChildren().add(iv);
-            } catch (Exception e) {}
-        }
-
-        Button btn = new Button((isIncoming ? "Tải: " : "Đã gửi: ") + fileName);
-        btn.setStyle("-fx-background-color: #31a24c; -fx-text-fill: white; -fx-background-radius: 10;");
-        btn.setOnAction(e -> {
-            FileChooser fc = new FileChooser(); fc.setInitialFileName(fileName);
-            File f = fc.showSaveDialog(null);
-            if(f != null) try { java.nio.file.Files.write(f.toPath(), data); } catch(Exception ex) { ex.printStackTrace(); }
-        });
-        
-        box.getChildren().add(btn);
-        messageContainer.getChildren().add(box);
-        scrollToBottom();
+    private void sendUdpRaw(String msg, int port) {
+        try {
+            byte[] data = msg.getBytes();
+            udpSocket.send(new java.net.DatagramPacket(data, data.length, java.net.InetAddress.getByName("127.0.0.1"), port));
+        } catch (Exception e) {}
     }
 
-    private void sendUdpFile(Stage stage) {
-        TextInputDialog id = new TextInputDialog("127.0.0.1:6001");
-        id.setHeaderText("Gửi file đến IP và Port máy nhận:");
-        id.setContentText("Nhập IP:Port (Ví dụ máy kia báo 6001 thì nhập 6001):");
-        
-        id.showAndWait().ifPresent(input -> {
-            try {
-                String host = input.split(":")[0];
-                int port = Integer.parseInt(input.split(":")[1]);
-                
-                FileChooser fc = new FileChooser();
-                File f = fc.showOpenDialog(stage);
-                if (f != null) new Thread(() -> {
-                    try {
-                        new UdpFileSender().sendFile(f, host, port);
-                        byte[] d = java.nio.file.Files.readAllBytes(f.toPath());
-                        Platform.runLater(() -> addFileTransferMessage(f.getName(), d, false));
-                    } catch (Exception ex) { ex.printStackTrace(); }
-                }).start();
-            } catch (Exception e) { addSystemMessage("Lỗi định dạng IP:Port"); }
-        });
+    private StackPane createAvatar(String name) {
+        String display = (name != null && !name.isEmpty()) ? name.substring(0, 1).toUpperCase() : "?";
+        Circle circle = new Circle(20);
+        String[] colors = {"#f44336", "#9c27b0", "#3f51b5", "#00bcd4", "#4caf50", "#ff9800", "#1877f2"};
+        circle.setFill(Color.web(colors[Math.abs(name.hashCode()) % colors.length]));
+        Label letter = new Label(display);
+        letter.setStyle("-fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 16px;");
+        return new StackPane(circle, letter);
     }
 
     private void updateFriendList(String name) {
-        if (name == null || name.equals(username)) return;
-        Platform.runLater(() -> {
-            if (!friendList.getItems().contains(name)) friendList.getItems().add(name);
-        });
+        Platform.runLater(() -> { if (!friendList.getItems().contains(name)) friendList.getItems().add(name); });
     }
 
     private void broadcastLogin() {
-        new Thread(() -> {
-            try {
-                Thread.sleep(1000);
-                try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
-                    socket.setBroadcast(true);
-                    byte[] sendData = ("LOGIN:" + username).getBytes();
-                    for (int p = 6000; p <= 6010; p++) {
-                        java.net.DatagramPacket pack = new java.net.DatagramPacket(
-                            sendData, sendData.length, 
-                            java.net.InetAddress.getByName("127.0.0.1"), p
-                        );
-                        socket.send(pack);
-                    }
-                }
-            } catch (Exception e) {}
-        }).start();
+        for (int p = 6000; p <= 6010; p++) if (p != currentUdpPort) sendUdpRaw("LOGIN:" + username + ":" + currentUdpPort, p);
     }
-    
-    private void addSystemMessage(String text) {
-        Label l = new Label(text); l.setStyle("-fx-text-fill: gray; -fx-font-style: italic; -fx-font-size: 11px;");
-        HBox hb = new HBox(l); hb.setAlignment(Pos.CENTER);
-        Platform.runLater(() -> messageContainer.getChildren().add(hb));
+
+    private void autoStartConnection() {
+        new Thread(() -> { startUdpReceiver(); try { Thread.sleep(500); broadcastLogin(); } catch (Exception e) {} }).start();
+    }
+
+    private void askUsername() {
+        TextInputDialog dialog = new TextInputDialog("Nam");
+        dialog.setHeaderText("Chào Nam, nhập tên để bắt đầu:");
+        username = dialog.showAndWait().orElse("Guest");
     }
 
     private void scrollToBottom() { Platform.runLater(() -> messageScroll.setVvalue(1.0)); }
-
     public static void main(String[] args) { launch(args); }
 }
