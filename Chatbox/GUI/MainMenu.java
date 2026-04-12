@@ -26,7 +26,6 @@ public class MainMenu extends Application {
     private Label chatHeaderName;
     private Label typingLabel; 
     
-    // Giữ nguyên các Map quản lý kết nối và thêm Map quản lý trạng thái tin nhắn
     private Map<String, Integer> friendPorts = new HashMap<>(); 
     private Map<String, String> lastMessages = new HashMap<>(); 
     private Map<String, Integer> unreadCounts = new HashMap<>(); 
@@ -39,29 +38,21 @@ public class MainMenu extends Application {
 
     @Override
     public void start(Stage primaryStage) {
+        cleanupHistory(); 
         try { Files.createDirectories(Paths.get(HISTORY_DIR)); } catch (IOException e) {}
-
-        // GIỮ NGUYÊN: Shutdown Hook dọn dẹp theo yêu cầu trước đó
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            cleanupHistory();
-        }));
-
         showDetailedLoginScreen(primaryStage);
-        
-        primaryStage.setOnCloseRequest(event -> {
-            Platform.exit();
-        });
+        primaryStage.setOnCloseRequest(event -> Platform.exit());
     }
 
     private void cleanupHistory() {
         try {
-            File folder = new File(HISTORY_DIR);
-            File[] files = folder.listFiles();
-            if (files != null) { for (File f : files) f.delete(); }
+            Path path = Paths.get(HISTORY_DIR);
+            if (Files.exists(path)) {
+                Files.walk(path).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+            }
         } catch (Exception e) {}
     }
 
-    // Giao diện đăng nhập chuẩn của Nam
     private void showDetailedLoginScreen(Stage stage) {
         VBox root = new VBox();
         root.setAlignment(Pos.CENTER);
@@ -88,15 +79,15 @@ public class MainMenu extends Application {
 
         btnLogin.setOnAction(e -> {
             if (!nameField.getText().trim().isEmpty()) {
-                username = nameField.getText().trim();
+                username = nameField.getText().trim().toLowerCase();
                 switchToMainChat(stage);
             }
         });
 
-        loginCard.getChildren().addAll(logo, new Label("HỆ THỐNG VẠN TÍN"), nameField, btnLogin);
+        loginCard.getChildren().addAll(logo, new Label("VẠN TÍN MESSENGER"), nameField, btnLogin);
         root.getChildren().add(loginCard);
         stage.setScene(new Scene(root, 1100, 750));
-        stage.setTitle("VẠN TÍN MESSENGER - LOGIN");
+        stage.setTitle("Login System - " + username);
         stage.show();
     }
 
@@ -118,29 +109,15 @@ public class MainMenu extends Application {
         ((Label)((VBox)profile.getChildren().get(1)).getChildren().get(1)).setStyle("-fx-text-fill: #31a24c; -fx-font-size: 12px;");
         ((Label)((VBox)profile.getChildren().get(1)).getChildren().get(0)).setStyle("-fx-font-weight: bold; -fx-font-size: 15px;");
 
-        // GIỮ NGUYÊN: Nút tạo nhóm đã fix lỗi nhấn được
         Button btnCreateGroup = new Button("+ Tạo Nhóm Mới");
         btnCreateGroup.setMaxWidth(Double.MAX_VALUE);
         btnCreateGroup.setPrefHeight(40);
         btnCreateGroup.setStyle("-fx-background-color: #1877f2; -fx-text-fill: white; -fx-font-weight: bold; -fx-background-radius: 8;");
-        btnCreateGroup.setOnAction(e -> {
-            TextInputDialog dialog = new TextInputDialog();
-            dialog.setTitle("Tạo Nhóm");
-            dialog.setHeaderText("Nhập tên nhóm mới:");
-            dialog.showAndWait().ifPresent(groupName -> {
-                if(!friendList.getItems().contains(groupName)) {
-                    friendList.getItems().add(groupName);
-                }
-            });
-        });
 
         Label sectionTitle = new Label("HỘI THOẠI");
         sectionTitle.setStyle("-fx-text-fill: #65676b; -fx-font-weight: bold; -fx-font-size: 13px;");
 
         friendList = new ListView<>();
-        friendList.getItems().add("Phòng chat chung");
-        
-        // NÂNG CẤP: Hiển thị tin nhắn cuối và Badge số đỏ
         friendList.setCellFactory(lv -> new ListCell<String>() {
             @Override protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
@@ -148,16 +125,17 @@ public class MainMenu extends Application {
                 else {
                     HBox cell = new HBox(12); cell.setAlignment(Pos.CENTER_LEFT); cell.setPadding(new Insets(8, 5, 8, 5));
                     StackPane avt = createAvatar(item);
-                    VBox info = new VBox(3);
+                    VBox info = new VBox(2);
                     Label name = new Label(item); name.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
-                    
-                    String last = lastMessages.getOrDefault(item, "Bắt đầu trò chuyện...");
-                    Label msg = new Label(last); msg.setStyle("-fx-text-fill: #65676b; -fx-font-size: 12px;");
-                    msg.setPrefWidth(150);
-                    
-                    info.getChildren().addAll(name, msg);
+                    info.getChildren().add(name);
+                    String last = lastMessages.get(item);
+                    if (last != null && !last.isEmpty()) {
+                        Label msg = new Label(last); 
+                        msg.setStyle("-fx-text-fill: #65676b; -fx-font-size: 12px;");
+                        msg.setPrefWidth(150);
+                        info.getChildren().add(msg);
+                    }
                     Region s = new Region(); HBox.setHgrow(s, Priority.ALWAYS);
-                    
                     StackPane badge = new StackPane();
                     int count = unreadCounts.getOrDefault(item, 0);
                     if (count > 0) {
@@ -186,24 +164,9 @@ public class MainMenu extends Application {
         return left;
     }
 
-    // GIỮ NGUYÊN: Toàn bộ Logic gửi tin, nhận file, và giao diện khung chat
-    private void handleIncoming(String room, String sender, String msg, boolean isMe) {
-        Platform.runLater(() -> {
-            saveHistory(room, sender, msg);
-            lastMessages.put(room, isMe ? "Bạn: " + msg : msg);
-            if (!chatHeaderName.getText().equals(room)) {
-                unreadCounts.put(room, unreadCounts.getOrDefault(room, 0) + 1);
-            }
-            friendList.refresh();
-            if (chatHeaderName.getText().equals(room)) displayMessage(sender, msg, isMe);
-        });
-    }
-
-    // ... (Các hàm startUdpReceiver, startTcpFileServer, displayMessage giữ nguyên như bản trước của Nam) ...
-
     private BorderPane createCenterPanel(Stage stage) {
         BorderPane center = new BorderPane();
-        chatHeaderName = new Label("Phòng chat chung");
+        chatHeaderName = new Label("Vạn Tín Messenger");
         chatHeaderName.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
         typingLabel = new Label(""); 
         typingLabel.setStyle("-fx-text-fill: #31a24c; -fx-font-style: italic;");
@@ -216,29 +179,47 @@ public class MainMenu extends Application {
         messageScroll.setStyle("-fx-background: #f0f2f5; -fx-background-color: #f0f2f5;");
         HBox bottom = new HBox(12); bottom.setPadding(new Insets(15, 25, 15, 25));
         bottom.setStyle("-fx-background-color: white;");
+        
         Button btnFile = new Button("📎"); 
         btnFile.setStyle("-fx-font-size: 20px; -fx-background-color: transparent;");
         btnFile.setOnAction(e -> sendFileViaTcp(stage));
+
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
         messageField.setStyle("-fx-background-radius: 20; -fx-padding: 10 15; -fx-background-color: #f0f2f5;");
         HBox.setHgrow(messageField, Priority.ALWAYS);
+
         Button btnSend = new Button("➤"); 
         btnSend.setStyle("-fx-text-fill: #1877f2; -fx-font-size: 22px; -fx-background-color: transparent;");
         btnSend.setOnAction(e -> sendMessage());
         messageField.setOnAction(e -> sendMessage());
+
         bottom.getChildren().addAll(btnFile, messageField, btnSend);
         center.setTop(headerBox); center.setCenter(messageScroll); center.setBottom(bottom);
         return center;
     }
 
+    private void handleIncoming(String room, String sender, String msg, boolean isMe) {
+        Platform.runLater(() -> {
+            saveHistory(room, sender, msg); 
+            lastMessages.put(room, isMe ? "Bạn: " + msg : msg);
+            if (!chatHeaderName.getText().equalsIgnoreCase(room)) {
+                unreadCounts.put(room, unreadCounts.getOrDefault(room, 0) + 1);
+            }
+            friendList.refresh();
+            if (chatHeaderName.getText().equalsIgnoreCase(room)) displayMessage(sender, msg, isMe);
+        });
+    }
+
     private void sendMessage() {
         String t = messageField.getText().trim(); if (t.isEmpty()) return;
         String target = chatHeaderName.getText();
-        if (!target.equals("Phòng chat chung")) {
-            Integer p = friendPorts.get(target);
-            if (p != null) sendUdpRaw("TEXT_MSG:" + username + ":" + t, p);
-        } else { friendPorts.values().forEach(p -> sendUdpRaw("TEXT_MSG:" + username + ":" + t, p)); }
+        if (target.equals("Vạn Tín Messenger")) return;
+        
+        Integer p = friendPorts.get(target);
+        if (p != null) {
+            sendUdpRaw("TEXT_MSG:" + username + ":" + target + ":" + t, p);
+        }
         handleIncoming(target, username, t, true);
         messageField.clear();
     }
@@ -251,25 +232,40 @@ public class MainMenu extends Application {
                     catch (Exception e) { currentUdpPort++; currentTcpPort++; } 
                 }
                 startTcpFileServer(); 
-                byte[] buf = new byte[65507];
                 while (true) {
+                    // CẢI TIẾN: Luôn tạo mới buffer để tránh rác dữ liệu
+                    byte[] buf = new byte[65507];
                     DatagramPacket p = new DatagramPacket(buf, buf.length);
                     udpSocket.receive(p);
-                    String data = new String(p.getData(), 0, p.getLength(), StandardCharsets.UTF_8);
-                    if (data.startsWith("TEXT_MSG:")) {
-                        String[] pts = data.split(":", 3);
-                        updateFriendList(pts[1]); handleIncoming(pts[1], pts[1], pts[2], false);
-                    } else if (data.startsWith("LOGIN:")) {
-                        String[] pts = data.split(":");
-                        if (!pts[1].equals(username)) {
+                    String rawData = new String(p.getData(), 0, p.getLength(), StandardCharsets.UTF_8).trim();
+                    
+                    if (rawData.startsWith("TEXT_MSG:")) {
+                        String[] pts = rawData.split(":", 4);
+                        if(pts.length >= 4) {
+                            String sender = pts[1];
+                            String receiver = pts[2];
+                            String content = pts[3];
+                            
+                            // CẢI TIẾN: Kiểm tra receiver chính xác tuyệt đối
+                            if (receiver.equalsIgnoreCase(username)) {
+                                friendPorts.put(sender, p.getPort());
+                                updateFriendList(sender);
+                                handleIncoming(sender, sender, content, false);
+                            }
+                        }
+                    } else if (rawData.startsWith("LOGIN:")) {
+                        String[] pts = rawData.split(":");
+                        if (pts.length >= 3 && !pts[1].equalsIgnoreCase(username)) {
                             friendPorts.put(pts[1], Integer.parseInt(pts[2]));
                             updateFriendList(pts[1]);
                             sendUdpRaw("REPLY_LOGIN:"+username+":"+currentUdpPort, Integer.parseInt(pts[2]));
                         }
-                    } else if (data.startsWith("REPLY_LOGIN:")) {
-                        String[] pts = data.split(":"); 
-                        friendPorts.put(pts[1], Integer.parseInt(pts[2]));
-                        updateFriendList(pts[1]);
+                    } else if (rawData.startsWith("REPLY_LOGIN:")) {
+                        String[] pts = rawData.split(":"); 
+                        if(pts.length >= 3) {
+                            friendPorts.put(pts[1], Integer.parseInt(pts[2]));
+                            updateFriendList(pts[1]);
+                        }
                     }
                 }
             } catch (Exception e) {}
@@ -298,7 +294,7 @@ public class MainMenu extends Application {
         if (Files.exists(p)) {
             try { Files.readAllLines(p).forEach(l -> {
                 String[] pts = l.split("\\|SEP\\|", 2);
-                if (pts.length == 2) displayMessage(pts[0], pts[1], pts[0].equals(username));
+                if (pts.length == 2) displayMessage(pts[0], pts[1], pts[0].equalsIgnoreCase(username));
             }); } catch (IOException e) {}
         }
     }
@@ -326,7 +322,7 @@ public class MainMenu extends Application {
 
     private void sendFileViaTcp(Stage stage) {
         String target = chatHeaderName.getText();
-        if (target.equals("Phòng chat chung") || !friendPorts.containsKey(target)) return;
+        if (target.equals("Vạn Tín Messenger") || !friendPorts.containsKey(target)) return;
         FileChooser fc = new FileChooser(); File f = fc.showOpenDialog(stage);
         if (f != null) {
             new Thread(() -> {
@@ -343,10 +339,8 @@ public class MainMenu extends Application {
     private void updateHeaderInfo(String name) {
         headerBox.getChildren().clear(); chatHeaderName.setText(name);
         VBox v = new VBox(2, chatHeaderName, typingLabel);
-        if (!name.equals("Phòng chat chung")) {
-            StackPane avt = createAvatar(name); ((Circle)avt.getChildren().get(0)).setRadius(20);
-            headerBox.getChildren().addAll(avt, v);
-        } else { headerBox.getChildren().add(v); }
+        StackPane avt = createAvatar(name); ((Circle)avt.getChildren().get(0)).setRadius(20);
+        headerBox.getChildren().addAll(avt, v);
     }
 
     private StackPane createAvatar(String name) {
@@ -363,7 +357,7 @@ public class MainMenu extends Application {
     }
     
     private void updateFriendList(String n) { 
-        Platform.runLater(() -> { if (!friendList.getItems().contains(n) && !n.equals(username)) friendList.getItems().add(n); }); 
+        Platform.runLater(() -> { if (!friendList.getItems().contains(n) && !n.equalsIgnoreCase(username)) friendList.getItems().add(n); }); 
     }
     
     private void autoStartConnection() {
