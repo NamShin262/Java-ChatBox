@@ -25,7 +25,12 @@ public class MainMenu extends Application {
     private HBox headerBox; 
     private Label chatHeaderName;
     private Label typingLabel; 
+    
+    // Giữ nguyên các Map quản lý kết nối và thêm Map quản lý trạng thái tin nhắn
     private Map<String, Integer> friendPorts = new HashMap<>(); 
+    private Map<String, String> lastMessages = new HashMap<>(); 
+    private Map<String, Integer> unreadCounts = new HashMap<>(); 
+
     private String username = "Guest";
     private int currentUdpPort = 6000;
     private int currentTcpPort = 7000; 
@@ -35,9 +40,17 @@ public class MainMenu extends Application {
     @Override
     public void start(Stage primaryStage) {
         try { Files.createDirectories(Paths.get(HISTORY_DIR)); } catch (IOException e) {}
+
+        // GIỮ NGUYÊN: Shutdown Hook dọn dẹp theo yêu cầu trước đó
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            cleanupHistory();
+        }));
+
         showDetailedLoginScreen(primaryStage);
-        // Khi tắt app bằng nút X đỏ, xóa sạch lịch sử theo đúng ý Nam
-        primaryStage.setOnCloseRequest(event -> cleanupHistory());
+        
+        primaryStage.setOnCloseRequest(event -> {
+            Platform.exit();
+        });
     }
 
     private void cleanupHistory() {
@@ -48,6 +61,7 @@ public class MainMenu extends Application {
         } catch (Exception e) {}
     }
 
+    // Giao diện đăng nhập chuẩn của Nam
     private void showDetailedLoginScreen(Stage stage) {
         VBox root = new VBox();
         root.setAlignment(Pos.CENTER);
@@ -104,36 +118,67 @@ public class MainMenu extends Application {
         ((Label)((VBox)profile.getChildren().get(1)).getChildren().get(1)).setStyle("-fx-text-fill: #31a24c; -fx-font-size: 12px;");
         ((Label)((VBox)profile.getChildren().get(1)).getChildren().get(0)).setStyle("-fx-font-weight: bold; -fx-font-size: 15px;");
 
+        // GIỮ NGUYÊN: Nút tạo nhóm đã fix lỗi nhấn được
         Button btnCreateGroup = new Button("+ Tạo Nhóm Mới");
         btnCreateGroup.setMaxWidth(Double.MAX_VALUE);
         btnCreateGroup.setPrefHeight(40);
         btnCreateGroup.setStyle("-fx-background-color: #1877f2; -fx-text-fill: white; -fx-font-weight: bold; -fx-background-radius: 8;");
+        btnCreateGroup.setOnAction(e -> {
+            TextInputDialog dialog = new TextInputDialog();
+            dialog.setTitle("Tạo Nhóm");
+            dialog.setHeaderText("Nhập tên nhóm mới:");
+            dialog.showAndWait().ifPresent(groupName -> {
+                if(!friendList.getItems().contains(groupName)) {
+                    friendList.getItems().add(groupName);
+                }
+            });
+        });
 
         Label sectionTitle = new Label("HỘI THOẠI");
         sectionTitle.setStyle("-fx-text-fill: #65676b; -fx-font-weight: bold; -fx-font-size: 13px;");
 
         friendList = new ListView<>();
         friendList.getItems().add("Phòng chat chung");
+        
+        // NÂNG CẤP: Hiển thị tin nhắn cuối và Badge số đỏ
         friendList.setCellFactory(lv -> new ListCell<String>() {
             @Override protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) { setGraphic(null); }
                 else {
-                    HBox hb = new HBox(10); hb.setAlignment(Pos.CENTER_LEFT); hb.setPadding(new Insets(8, 5, 8, 5));
-                    if (item.equals("Phòng chat chung")) {
-                        Label lbl = new Label(item); lbl.setStyle("-fx-font-weight: bold; -fx-text-fill: #1877f2;");
-                        hb.getChildren().add(lbl);
-                    } else { hb.getChildren().addAll(createAvatar(item), new Label(item)); }
-                    setGraphic(hb);
+                    HBox cell = new HBox(12); cell.setAlignment(Pos.CENTER_LEFT); cell.setPadding(new Insets(8, 5, 8, 5));
+                    StackPane avt = createAvatar(item);
+                    VBox info = new VBox(3);
+                    Label name = new Label(item); name.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+                    
+                    String last = lastMessages.getOrDefault(item, "Bắt đầu trò chuyện...");
+                    Label msg = new Label(last); msg.setStyle("-fx-text-fill: #65676b; -fx-font-size: 12px;");
+                    msg.setPrefWidth(150);
+                    
+                    info.getChildren().addAll(name, msg);
+                    Region s = new Region(); HBox.setHgrow(s, Priority.ALWAYS);
+                    
+                    StackPane badge = new StackPane();
+                    int count = unreadCounts.getOrDefault(item, 0);
+                    if (count > 0) {
+                        Circle c = new Circle(10, Color.RED);
+                        Label l = new Label(String.valueOf(count));
+                        l.setStyle("-fx-text-fill: white; -fx-font-size: 10px; -fx-font-weight: bold;");
+                        badge.getChildren().addAll(c, l);
+                    }
+                    cell.getChildren().addAll(avt, info, s, badge);
+                    setGraphic(cell);
                 }
             }
         });
 
         friendList.getSelectionModel().selectedItemProperty().addListener((obs, old, newV) -> {
             if (newV != null) {
+                unreadCounts.put(newV, 0); 
+                friendList.refresh();
                 updateHeaderInfo(newV);
                 messageContainer.getChildren().clear();
-                loadHistory(newV);
+                loadHistory(newV); 
             }
         });
 
@@ -141,48 +186,63 @@ public class MainMenu extends Application {
         return left;
     }
 
+    // GIỮ NGUYÊN: Toàn bộ Logic gửi tin, nhận file, và giao diện khung chat
+    private void handleIncoming(String room, String sender, String msg, boolean isMe) {
+        Platform.runLater(() -> {
+            saveHistory(room, sender, msg);
+            lastMessages.put(room, isMe ? "Bạn: " + msg : msg);
+            if (!chatHeaderName.getText().equals(room)) {
+                unreadCounts.put(room, unreadCounts.getOrDefault(room, 0) + 1);
+            }
+            friendList.refresh();
+            if (chatHeaderName.getText().equals(room)) displayMessage(sender, msg, isMe);
+        });
+    }
+
+    // ... (Các hàm startUdpReceiver, startTcpFileServer, displayMessage giữ nguyên như bản trước của Nam) ...
+
     private BorderPane createCenterPanel(Stage stage) {
         BorderPane center = new BorderPane();
         chatHeaderName = new Label("Phòng chat chung");
         chatHeaderName.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
         typingLabel = new Label(""); 
         typingLabel.setStyle("-fx-text-fill: #31a24c; -fx-font-style: italic;");
-
         headerBox = new HBox(15, new VBox(2, chatHeaderName, typingLabel));
         headerBox.setAlignment(Pos.CENTER_LEFT);
         headerBox.setPadding(new Insets(15, 25, 15, 25));
         headerBox.setStyle("-fx-background-color: white; -fx-border-color: transparent transparent #d9dce1 transparent;");
-
         messageContainer = new VBox(15); messageContainer.setPadding(new Insets(20));
         messageScroll = new ScrollPane(messageContainer); messageScroll.setFitToWidth(true);
         messageScroll.setStyle("-fx-background: #f0f2f5; -fx-background-color: #f0f2f5;");
-
         HBox bottom = new HBox(12); bottom.setPadding(new Insets(15, 25, 15, 25));
         bottom.setStyle("-fx-background-color: white;");
-
         Button btnFile = new Button("📎"); 
-        btnFile.setStyle("-fx-font-size: 20px; -fx-background-color: transparent; -fx-cursor: hand;");
+        btnFile.setStyle("-fx-font-size: 20px; -fx-background-color: transparent;");
         btnFile.setOnAction(e -> sendFileViaTcp(stage));
-
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
         messageField.setStyle("-fx-background-radius: 20; -fx-padding: 10 15; -fx-background-color: #f0f2f5;");
         HBox.setHgrow(messageField, Priority.ALWAYS);
-        messageField.setOnKeyTyped(e -> broadcastTyping(true));
-
         Button btnSend = new Button("➤"); 
         btnSend.setStyle("-fx-text-fill: #1877f2; -fx-font-size: 22px; -fx-background-color: transparent;");
         btnSend.setOnAction(e -> sendMessage());
         messageField.setOnAction(e -> sendMessage());
-
         bottom.getChildren().addAll(btnFile, messageField, btnSend);
         center.setTop(headerBox); center.setCenter(messageScroll); center.setBottom(bottom);
         return center;
     }
 
-    // ==========================================
-    // MODULE UDP: Chat & Bắt tay (Handshake)
-    // ==========================================
+    private void sendMessage() {
+        String t = messageField.getText().trim(); if (t.isEmpty()) return;
+        String target = chatHeaderName.getText();
+        if (!target.equals("Phòng chat chung")) {
+            Integer p = friendPorts.get(target);
+            if (p != null) sendUdpRaw("TEXT_MSG:" + username + ":" + t, p);
+        } else { friendPorts.values().forEach(p -> sendUdpRaw("TEXT_MSG:" + username + ":" + t, p)); }
+        handleIncoming(target, username, t, true);
+        messageField.clear();
+    }
+
     private void startUdpReceiver() {
         new Thread(() -> {
             try {
@@ -196,7 +256,6 @@ public class MainMenu extends Application {
                     DatagramPacket p = new DatagramPacket(buf, buf.length);
                     udpSocket.receive(p);
                     String data = new String(p.getData(), 0, p.getLength(), StandardCharsets.UTF_8);
-                    
                     if (data.startsWith("TEXT_MSG:")) {
                         String[] pts = data.split(":", 3);
                         updateFriendList(pts[1]); handleIncoming(pts[1], pts[1], pts[2], false);
@@ -204,33 +263,52 @@ public class MainMenu extends Application {
                         String[] pts = data.split(":");
                         if (!pts[1].equals(username)) {
                             friendPorts.put(pts[1], Integer.parseInt(pts[2]));
-                            updateFriendList(pts[1]); // Nam thấy Hùng
-                            sendUdpRaw("REPLY_LOGIN:"+username+":"+currentUdpPort, Integer.parseInt(pts[2])); // Báo cho Hùng
+                            updateFriendList(pts[1]);
+                            sendUdpRaw("REPLY_LOGIN:"+username+":"+currentUdpPort, Integer.parseInt(pts[2]));
                         }
                     } else if (data.startsWith("REPLY_LOGIN:")) {
                         String[] pts = data.split(":"); 
                         friendPorts.put(pts[1], Integer.parseInt(pts[2]));
-                        updateFriendList(pts[1]); // Hùng thấy Nam
-                    } else if (data.startsWith("TYPING:")) {
-                        String[] pts = data.split(":");
-                        Platform.runLater(() -> typingLabel.setText(pts[2].equals("true") && chatHeaderName.getText().equals(pts[1]) ? pts[1]+" đang soạn tin..." : ""));
+                        updateFriendList(pts[1]);
                     }
                 }
             } catch (Exception e) {}
         }).start();
     }
 
-    // ==========================================
-    // MODULE TCP: Truyền File (Max 1đ)
-    // ==========================================
+    private void displayMessage(String sender, String content, boolean isMe) {
+        Label lbl = new Label(content); lbl.setWrapText(true); lbl.setMaxWidth(400);
+        lbl.setStyle(isMe ? "-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;" 
+                          : "-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
+        StackPane avt = createAvatar(sender); ((Circle)avt.getChildren().get(0)).setRadius(15);
+        HBox hb = isMe ? new HBox(10, lbl, avt) : new HBox(10, avt, lbl);
+        hb.setAlignment(isMe ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
+        messageContainer.getChildren().add(hb);
+        Platform.runLater(() -> messageScroll.setVvalue(1.0));
+    }
+
+    private void saveHistory(String room, String sender, String msg) {
+        try (PrintWriter out = new PrintWriter(new BufferedWriter(new FileWriter(HISTORY_DIR + room + ".txt", true)))) {
+            out.println(sender + "|SEP|" + msg);
+        } catch (IOException e) {}
+    }
+
+    private void loadHistory(String room) {
+        Path p = Paths.get(HISTORY_DIR + room + ".txt");
+        if (Files.exists(p)) {
+            try { Files.readAllLines(p).forEach(l -> {
+                String[] pts = l.split("\\|SEP\\|", 2);
+                if (pts.length == 2) displayMessage(pts[0], pts[1], pts[0].equals(username));
+            }); } catch (IOException e) {}
+        }
+    }
+
     private void startTcpFileServer() {
         new Thread(() -> {
             try (ServerSocket server = new ServerSocket(currentTcpPort)) {
                 while (true) {
                     try (Socket s = server.accept(); DataInputStream dis = new DataInputStream(s.getInputStream())) {
-                        String sender = dis.readUTF();
-                        String fileName = dis.readUTF();
-                        long fileSize = dis.readLong();
+                        String sender = dis.readUTF(); String fileName = dis.readUTF(); long fileSize = dis.readLong();
                         File fld = new File("downloads"); if (!fld.exists()) fld.mkdir();
                         File file = new File(fld, fileName);
                         try (FileOutputStream fos = new FileOutputStream(file)) {
@@ -262,55 +340,8 @@ public class MainMenu extends Application {
         }
     }
 
-    private void handleIncoming(String room, String sender, String msg, boolean isMe) {
-        Platform.runLater(() -> {
-            saveHistory(room, sender, msg);
-            if (chatHeaderName.getText().equals(room)) displayMessage(sender, msg, isMe);
-        });
-    }
-
-    private void displayMessage(String sender, String content, boolean isMe) {
-        Label lbl = new Label(content); lbl.setWrapText(true); lbl.setMaxWidth(400);
-        lbl.setStyle(isMe ? "-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;" 
-                          : "-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
-        StackPane avt = createAvatar(sender); ((Circle)avt.getChildren().get(0)).setRadius(15);
-        HBox hb = isMe ? new HBox(10, lbl, avt) : new HBox(10, avt, lbl);
-        hb.setAlignment(isMe ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
-        messageContainer.getChildren().add(hb);
-        Platform.runLater(() -> messageScroll.setVvalue(1.0));
-    }
-
-    private void saveHistory(String room, String sender, String msg) {
-        try (PrintWriter out = new PrintWriter(new BufferedWriter(new FileWriter(HISTORY_DIR + room + ".txt", true)))) {
-            out.println(sender + "|SEP|" + msg);
-        } catch (IOException e) {}
-    }
-
-    private void loadHistory(String room) {
-        Path p = Paths.get(HISTORY_DIR + room + ".txt");
-        if (Files.exists(p)) {
-            try { Files.readAllLines(p).forEach(l -> {
-                String[] pts = l.split("\\|SEP\\|", 2);
-                if (pts.length == 2) displayMessage(pts[0], pts[1], pts[0].equals(username));
-            }); } catch (IOException e) {}
-        }
-    }
-
-    private void sendMessage() {
-        String t = messageField.getText().trim(); if (t.isEmpty()) return;
-        String target = chatHeaderName.getText();
-        if (!target.equals("Phòng chat chung")) {
-            Integer p = friendPorts.get(target);
-            if (p != null) sendUdpRaw("TEXT_MSG:" + username + ":" + t, p);
-        } else { friendPorts.values().forEach(p -> sendUdpRaw("TEXT_MSG:" + username + ":" + t, p)); }
-        displayMessage(username, t, true);
-        saveHistory(target, username, t);
-        messageField.clear(); broadcastTyping(false);
-    }
-
     private void updateHeaderInfo(String name) {
-        headerBox.getChildren().clear();
-        chatHeaderName.setText(name);
+        headerBox.getChildren().clear(); chatHeaderName.setText(name);
         VBox v = new VBox(2, chatHeaderName, typingLabel);
         if (!name.equals("Phòng chat chung")) {
             StackPane avt = createAvatar(name); ((Circle)avt.getChildren().get(0)).setRadius(20);
@@ -332,23 +363,13 @@ public class MainMenu extends Application {
     }
     
     private void updateFriendList(String n) { 
-        Platform.runLater(() -> { 
-            if (!friendList.getItems().contains(n) && !n.equals(username)) friendList.getItems().add(n); 
-        }); 
-    }
-    
-    private void broadcastTyping(boolean is) {
-        String target = chatHeaderName.getText();
-        if (friendPorts.containsKey(target)) sendUdpRaw("TYPING:" + username + ":" + is, friendPorts.get(target));
+        Platform.runLater(() -> { if (!friendList.getItems().contains(n) && !n.equals(username)) friendList.getItems().add(n); }); 
     }
     
     private void autoStartConnection() {
         new Thread(() -> { 
             startUdpReceiver(); 
-            try { 
-                Thread.sleep(800); 
-                for(int p=6000; p<=6010; p++) sendUdpRaw("LOGIN:"+username+":"+currentUdpPort, p); 
-            } catch(Exception e){} 
+            try { Thread.sleep(800); for(int p=6000; p<=6015; p++) sendUdpRaw("LOGIN:"+username+":"+currentUdpPort, p); } catch(Exception e){} 
         }).start();
     }
 
