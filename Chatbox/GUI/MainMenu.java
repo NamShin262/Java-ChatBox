@@ -1,20 +1,26 @@
 package Chatbox.GUI;
 
+import java.awt.Desktop;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.stage.Stage;
+import javafx.stage.FileChooser;
 
 public class MainMenu extends Application {
     private VBox messageContainer;
@@ -24,8 +30,10 @@ public class MainMenu extends Application {
     private HBox headerBox; 
     private Label chatHeaderName;
     private Label typingLabel; 
+    private Stage mainStage;
     
     private Map<String, Integer> friendPorts = new HashMap<>(); 
+    private Map<String, InetAddress> friendAddresses = new HashMap<>();
     private Map<String, String> lastMessages = new HashMap<>(); 
     private Map<String, Integer> unreadCounts = new HashMap<>(); 
     private Map<String, List<String>> groupMembers = new HashMap<>();
@@ -34,10 +42,21 @@ public class MainMenu extends Application {
     private int currentUdpPort = 6000;
     private DatagramSocket udpSocket;
     private final String HISTORY_DIR = "chat_history/";
+    private final String ATTACHMENTS_DIR = "chat_history/attachments/";
+    private final String RECEIVED_DIR = "chat_history/received/";
+    private final int FILE_CHUNK_SIZE = 48000;
+
+    private final Map<String, IncomingTransfer> incomingTransfers = new ConcurrentHashMap<>();
+    private final AtomicInteger transferCounter = new AtomicInteger(1);
 
     @Override
     public void start(Stage primaryStage) {
-        try { Files.createDirectories(Paths.get(HISTORY_DIR)); } catch (IOException e) {}
+        mainStage = primaryStage;
+        try {
+            Files.createDirectories(Paths.get(HISTORY_DIR));
+            Files.createDirectories(Paths.get(ATTACHMENTS_DIR));
+            Files.createDirectories(Paths.get(RECEIVED_DIR));
+        } catch (IOException e) {}
         showDetailedLoginScreen(primaryStage);
         primaryStage.setOnCloseRequest(event -> Platform.exit());
     }
@@ -152,8 +171,7 @@ public class MainMenu extends Application {
                         String memberListStr = String.join(",", allMembers);
                         for (String m : allMembers) {
                             if (m.equalsIgnoreCase(username)) continue;
-                            Integer p = friendPorts.get(m.toLowerCase());
-                            if (p != null) sendUdpRaw("NEW_GROUP:" + gName + ":" + memberListStr, p);
+                            sendToUser(m, "NEW_GROUP:" + gName + ":" + memberListStr);
                         }
                     }
                 });
@@ -236,7 +254,11 @@ public class MainMenu extends Application {
         btnSend.setOnAction(e -> sendMessage());
         messageField.setOnAction(e -> sendMessage());
 
-        bottom.getChildren().addAll(new Button("📎"), messageField, btnSend);
+        Button btnAttach = new Button("📎");
+        btnAttach.setStyle("-fx-font-size: 18px; -fx-background-color: transparent;");
+        btnAttach.setOnAction(e -> sendAttachment());
+
+        bottom.getChildren().addAll(btnAttach, messageField, btnSend);
         center.setTop(headerBox); center.setCenter(messageScroll); center.setBottom(bottom);
         return center;
     }
@@ -244,7 +266,7 @@ public class MainMenu extends Application {
     private void handleIncoming(String room, String sender, String msg, boolean isMe) {
         Platform.runLater(() -> {
             saveHistory(room, sender, msg); 
-            lastMessages.put(room, (isMe ? "Bạn: " : sender + ": ") + msg);
+            lastMessages.put(room, (isMe ? "Bạn: " : sender + ": ") + summarizeMessageForList(msg));
             
             // Tìm tên hiển thị hiện tại ở Header để so sánh logic
             String currentDisplay = chatHeaderName.getText();
@@ -270,24 +292,89 @@ public class MainMenu extends Application {
             if (members != null) {
                 for (String m : members) {
                     if (m.equalsIgnoreCase(username)) continue;
-                    Integer p = friendPorts.get(m.toLowerCase());
-                    if (p != null) sendUdpRaw("GROUP_MSG:" + username + ":" + target + ":" + t, p);
+                    sendToUser(m, "GROUP_MSG:" + username + ":" + target + ":" + t);
                 }
             }
         } else {
-            Integer p = friendPorts.get(target.toLowerCase());
-            if (p != null) sendUdpRaw("TEXT_MSG:" + username + ":" + target + ":" + t, p);
+            sendToUser(target, "TEXT_MSG:" + username + ":" + target + ":" + t);
         }
         handleIncoming(target, username, t, true);
         messageField.clear();
+    }
+
+    private void sendAttachment() {
+        String target = friendList.getSelectionModel().getSelectedItem();
+        if (target == null || target.equals("Vạn Tín Messenger")) return;
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Chọn ảnh hoặc file để gửi");
+        FileChooser.ExtensionFilter allFilter = new FileChooser.ExtensionFilter("Tất cả file", "*.*");
+        FileChooser.ExtensionFilter imgFilter = new FileChooser.ExtensionFilter("Ảnh", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.webp");
+        chooser.getExtensionFilters().addAll(allFilter, imgFilter);
+        chooser.setSelectedExtensionFilter(allFilter);
+
+        File selected = chooser.showOpenDialog(mainStage);
+        if (selected == null || !selected.exists()) return;
+
+        String ext = "";
+        String name = selected.getName();
+        int idx = name.lastIndexOf('.');
+        if (idx >= 0) ext = name.substring(idx).toLowerCase();
+        boolean isImage = Arrays.asList(".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp").contains(ext);
+
+        String safeFileName = name.replace("|", "_").replace(":", "_");
+        String transferId = username + "-" + System.currentTimeMillis() + "-" + transferCounter.getAndIncrement();
+        try {
+            byte[] data = Files.readAllBytes(selected.toPath());
+            String localSaved = saveAttachmentLocally(data, username, safeFileName, "sent");
+            sendAttachmentTransfer(target, transferId, safeFileName, isImage ? "IMG" : "FILE", data);
+            String localPayload = buildAttachmentPayload(isImage ? "IMG" : "FILE", safeFileName, localSaved);
+            handleIncoming(target, username, localPayload, true);
+        } catch (IOException e) {
+            // ignore
+        }
+    }
+
+    private void sendAttachmentTransfer(String target, String transferId, String fileName, String fileType, byte[] data) {
+        String encoded = Base64.getEncoder().encodeToString(data);
+        int totalChunks = (encoded.length() + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE;
+        String fileSize = String.valueOf(data.length);
+
+        if (target.startsWith("GROUP:")) {
+            List<String> members = groupMembers.get(target);
+            if (members == null) return;
+            for (String m : members) {
+                if (m.equalsIgnoreCase(username)) continue;
+
+                sendToUser(m, "FILE_META_G:" + transferId + ":" + username + ":" + target + ":" + fileType + ":" + fileName + ":" + fileSize + ":" + totalChunks);
+                for (int i = 0; i < totalChunks; i++) {
+                    int from = i * FILE_CHUNK_SIZE;
+                    int to = Math.min(encoded.length(), from + FILE_CHUNK_SIZE);
+                    String chunk = encoded.substring(from, to);
+                    sendToUser(m, "FILE_CHUNK_G:" + transferId + ":" + username + ":" + target + ":" + i + ":" + totalChunks + ":" + chunk);
+                }
+                sendToUser(m, "FILE_END_G:" + transferId + ":" + username + ":" + target);
+            }
+        } else {
+            sendToUser(target, "FILE_META:" + transferId + ":" + username + ":" + target + ":" + fileType + ":" + fileName + ":" + fileSize + ":" + totalChunks);
+            for (int i = 0; i < totalChunks; i++) {
+                int from = i * FILE_CHUNK_SIZE;
+                int to = Math.min(encoded.length(), from + FILE_CHUNK_SIZE);
+                String chunk = encoded.substring(from, to);
+                sendToUser(target, "FILE_CHUNK:" + transferId + ":" + username + ":" + target + ":" + i + ":" + totalChunks + ":" + chunk);
+            }
+            sendToUser(target, "FILE_END:" + transferId + ":" + username + ":" + target);
+        }
     }
 
     private void startUdpReceiver() {
         new Thread(() -> {
             try {
                 while (udpSocket == null) { 
-                    try { udpSocket = new DatagramSocket(currentUdpPort); } 
-                    catch (Exception e) { currentUdpPort++; } 
+                    try {
+                        udpSocket = new DatagramSocket(currentUdpPort);
+                        udpSocket.setBroadcast(true);
+                    } catch (Exception e) { currentUdpPort++; } 
                 }
                 while (true) {
                     byte[] buf = new byte[65507];
@@ -300,6 +387,7 @@ public class MainMenu extends Application {
                         if(pts.length >= 4 && pts[2].trim().equalsIgnoreCase(username)) {
                             String sender = pts[1].trim();
                             friendPorts.put(sender.toLowerCase(), p.getPort());
+                            friendAddresses.put(sender.toLowerCase(), p.getAddress());
                             updateFriendList(sender);
                             handleIncoming(sender, sender, pts[3], false);
                         }
@@ -317,6 +405,59 @@ public class MainMenu extends Application {
                             });
                             
                             handleIncoming(groupID, sender, pts[3], false);
+                        }
+                    } else if (rawData.startsWith("FILE_META:")) {
+                        String[] pts = rawData.split(":", 8);
+                        if (pts.length >= 8 && pts[3].trim().equalsIgnoreCase(username)) {
+                            String transferId = pts[1].trim();
+                            String sender = pts[2].trim();
+                            String fileType = pts[4].trim();
+                            String fileName = pts[5].trim();
+                            int totalChunks = Integer.parseInt(pts[7].trim());
+                            incomingTransfers.put(transferId, new IncomingTransfer(sender, sender, fileType, fileName, totalChunks));
+                            friendPorts.put(sender.toLowerCase(), p.getPort());
+                            friendAddresses.put(sender.toLowerCase(), p.getAddress());
+                            updateFriendList(sender);
+                        }
+                    } else if (rawData.startsWith("FILE_META_G:")) {
+                        String[] pts = rawData.split(":", 8);
+                        if (pts.length >= 8) {
+                            String transferId = pts[1].trim();
+                            String sender = pts[2].trim();
+                            String groupID = pts[3].trim();
+                            String fileType = pts[4].trim();
+                            String fileName = pts[5].trim();
+                            int totalChunks = Integer.parseInt(pts[7].trim());
+                            incomingTransfers.put(transferId, new IncomingTransfer(sender, groupID, fileType, fileName, totalChunks));
+                            Platform.runLater(() -> {
+                                if(!friendList.getItems().contains(groupID)) {
+                                    friendList.getItems().add(0, groupID);
+                                }
+                            });
+                        }
+                    } else if (rawData.startsWith("FILE_CHUNK:")) {
+                        String[] pts = rawData.split(":", 7);
+                        if (pts.length >= 7 && pts[3].trim().equalsIgnoreCase(username)) {
+                            String transferId = pts[1].trim();
+                            int chunkIndex = Integer.parseInt(pts[4].trim());
+                            appendChunk(transferId, chunkIndex, pts[6]);
+                        }
+                    } else if (rawData.startsWith("FILE_CHUNK_G:")) {
+                        String[] pts = rawData.split(":", 7);
+                        if (pts.length >= 7) {
+                            String transferId = pts[1].trim();
+                            int chunkIndex = Integer.parseInt(pts[4].trim());
+                            appendChunk(transferId, chunkIndex, pts[6]);
+                        }
+                    } else if (rawData.startsWith("FILE_END:")) {
+                        String[] pts = rawData.split(":", 4);
+                        if (pts.length >= 4 && pts[3].trim().equalsIgnoreCase(username)) {
+                            finalizeIncomingTransfer(pts[1].trim());
+                        }
+                    } else if (rawData.startsWith("FILE_END_G:")) {
+                        String[] pts = rawData.split(":", 4);
+                        if (pts.length >= 4) {
+                            finalizeIncomingTransfer(pts[1].trim());
                         }
                     } else if (rawData.startsWith("NEW_GROUP:")) {
                         String[] pts = rawData.split(":", 3);
@@ -336,8 +477,9 @@ public class MainMenu extends Application {
                             String sender = pts[1].trim();
                             if (!sender.equalsIgnoreCase(username)) {
                                 friendPorts.put(sender.toLowerCase(), Integer.parseInt(pts[2]));
+                                friendAddresses.put(sender.toLowerCase(), p.getAddress());
                                 updateFriendList(sender);
-                                sendUdpRaw("REPLY_LOGIN:"+username+":"+currentUdpPort, Integer.parseInt(pts[2]));
+                                sendUdpRawTo("REPLY_LOGIN:"+username+":"+currentUdpPort, Integer.parseInt(pts[2]), p.getAddress());
                             }
                         }
                     } else if (rawData.startsWith("REPLY_LOGIN:")) {
@@ -345,6 +487,7 @@ public class MainMenu extends Application {
                         if(pts.length >= 3) {
                             String sender = pts[1].trim();
                             friendPorts.put(sender.toLowerCase(), Integer.parseInt(pts[2]));
+                            friendAddresses.put(sender.toLowerCase(), p.getAddress());
                             updateFriendList(sender);
                         }
                     }
@@ -353,15 +496,160 @@ public class MainMenu extends Application {
         }).start();
     }
 
+    private void appendChunk(String transferId, int chunkIndex, String chunkData) {
+        IncomingTransfer transfer = incomingTransfers.get(transferId);
+        if (transfer == null) return;
+        transfer.chunks.put(chunkIndex, chunkData);
+    }
+
+    private void finalizeIncomingTransfer(String transferId) {
+        IncomingTransfer transfer = incomingTransfers.remove(transferId);
+        if (transfer == null) return;
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < transfer.totalChunks; i++) {
+            String c = transfer.chunks.get(i);
+            if (c == null) return;
+            sb.append(c);
+        }
+
+        try {
+            byte[] raw = Base64.getDecoder().decode(sb.toString());
+            String cleanName = transfer.fileName.replace("/", "_").replace("\\", "_").replace(":", "_");
+            String savedName = System.currentTimeMillis() + "_" + transfer.sender + "_" + cleanName;
+            Path out = Paths.get(RECEIVED_DIR, savedName);
+            Files.write(out, raw);
+
+            String payload = buildAttachmentPayload(transfer.fileType, cleanName, out.toAbsolutePath().toString());
+            handleIncoming(transfer.roomId, transfer.sender, payload, false);
+        } catch (Exception e) {
+            // ignore
+        }
+    }
+
     private void displayMessage(String sender, String content, boolean isMe) {
-        Label lbl = new Label(content); lbl.setWrapText(true); lbl.setMaxWidth(400);
-        lbl.setStyle(isMe ? "-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;" 
-                          : "-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
-        StackPane avt = createAvatar(sender); ((Circle)avt.getChildren().get(0)).setRadius(15);
-        HBox hb = isMe ? new HBox(10, lbl, avt) : new HBox(10, avt, lbl);
+        Region bubbleContent;
+        if (isAttachmentMessage(content)) {
+            bubbleContent = createAttachmentBubble(content, isMe);
+        } else {
+            Label lbl = new Label(content);
+            lbl.setWrapText(true);
+            lbl.setMaxWidth(400);
+            lbl.setStyle(isMe
+                ? "-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;"
+                : "-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
+            bubbleContent = lbl;
+        }
+
+        StackPane avt = createAvatar(sender);
+        ((Circle)avt.getChildren().get(0)).setRadius(15);
+        HBox hb = isMe ? new HBox(10, bubbleContent, avt) : new HBox(10, avt, bubbleContent);
         hb.setAlignment(isMe ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
         messageContainer.getChildren().add(hb);
         Platform.runLater(() -> messageScroll.setVvalue(1.0));
+    }
+
+    private boolean isAttachmentMessage(String msg) {
+        return msg != null && msg.startsWith("ATTACH|");
+    }
+
+    private String buildAttachmentPayload(String type, String name, String path) {
+        return "ATTACH|" + type + "|" + name.replace("|", "_") + "|" + path.replace("|", "_");
+    }
+
+    private String summarizeMessageForList(String msg) {
+        if (!isAttachmentMessage(msg)) return msg;
+        String[] p = msg.split("\\|", 4);
+        if (p.length < 4) return "[Tệp đính kèm]";
+        return ("IMG".equalsIgnoreCase(p[1]) ? "[Ảnh] " : "[File] ") + p[2];
+    }
+
+    private String saveAttachmentLocally(byte[] data, String owner, String fileName, String folderType) throws IOException {
+        Path folder = "sent".equals(folderType) ? Paths.get(ATTACHMENTS_DIR) : Paths.get(RECEIVED_DIR);
+        Files.createDirectories(folder);
+        String cleanName = fileName.replace("/", "_").replace("\\", "_").replace(":", "_");
+        String savedName = System.currentTimeMillis() + "_" + owner + "_" + cleanName;
+        Path out = folder.resolve(savedName);
+        Files.write(out, data);
+        return out.toAbsolutePath().toString();
+    }
+
+    private Region createAttachmentBubble(String payload, boolean isMe) {
+        String[] p = payload.split("\\|", 4);
+        if (p.length < 4) {
+            Label fallback = new Label(payload);
+            fallback.setWrapText(true);
+            fallback.setStyle(isMe
+                ? "-fx-background-color: #0084ff; -fx-text-fill: white; -fx-background-radius: 18 18 2 18; -fx-padding: 10 15;"
+                : "-fx-background-color: #e4e6eb; -fx-text-fill: black; -fx-background-radius: 18 18 18 2; -fx-padding: 10 15;");
+            return fallback;
+        }
+
+        String type = p[1];
+        String fileName = p[2];
+        String filePath = p[3];
+
+        VBox box = new VBox(8);
+        box.setPadding(new Insets(10, 12, 10, 12));
+        box.setMaxWidth(420);
+        box.setStyle(isMe
+            ? "-fx-background-color: #0084ff; -fx-background-radius: 18 18 2 18;"
+            : "-fx-background-color: #e4e6eb; -fx-background-radius: 18 18 18 2;");
+
+        Label title = new Label(("IMG".equalsIgnoreCase(type) ? "Ảnh: " : "File: ") + fileName);
+        title.setWrapText(true);
+        title.setStyle(isMe ? "-fx-text-fill: white; -fx-font-weight: bold;" : "-fx-text-fill: black; -fx-font-weight: bold;");
+        box.getChildren().add(title);
+
+        Path path = Paths.get(filePath);
+        if ("IMG".equalsIgnoreCase(type) && Files.exists(path)) {
+            try {
+                Image img = new Image(path.toUri().toString(), 240, 240, true, true);
+                if (!img.isError()) {
+                    ImageView iv = new ImageView(img);
+                    iv.setPreserveRatio(true);
+                    iv.setFitWidth(220);
+                    iv.setOnMouseClicked(e -> openFile(path));
+                    box.getChildren().add(iv);
+                }
+            } catch (Exception e) {
+                // ignore preview load
+            }
+        }
+
+        HBox actions = new HBox(8);
+        Button btnView = new Button("Xem");
+        Button btnDownload = new Button("Tải về");
+        btnView.setOnAction(e -> openFile(path));
+        btnDownload.setOnAction(e -> saveCopyAs(path, fileName));
+        actions.getChildren().addAll(btnView, btnDownload);
+        box.getChildren().add(actions);
+
+        return box;
+    }
+
+    private void openFile(Path path) {
+        try {
+            if (path != null && Files.exists(path) && Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().open(path.toFile());
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+    }
+
+    private void saveCopyAs(Path source, String defaultName) {
+        try {
+            if (source == null || !Files.exists(source)) return;
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("Chọn nơi lưu file");
+            chooser.setInitialFileName(defaultName);
+            File out = chooser.showSaveDialog(mainStage);
+            if (out == null) return;
+            Files.copy(source, out.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception e) {
+            // ignore
+        }
     }
 
     private void saveHistory(String room, String sender, String msg) {
@@ -410,7 +698,24 @@ public class MainMenu extends Application {
     }
 
     private void sendUdpRaw(String m, int p) {
-        try { byte[] d = m.getBytes(StandardCharsets.UTF_8); udpSocket.send(new DatagramPacket(d, d.length, InetAddress.getByName("127.0.0.1"), p)); } catch (Exception e) {}
+        try {
+            sendUdpRawTo(m, p, InetAddress.getByName("127.0.0.1"));
+        } catch (Exception e) {}
+    }
+
+    private void sendUdpRawTo(String m, int p, InetAddress addr) {
+        try {
+            byte[] d = m.getBytes(StandardCharsets.UTF_8);
+            udpSocket.send(new DatagramPacket(d, d.length, addr, p));
+        } catch (Exception e) {}
+    }
+
+    private void sendToUser(String user, String message) {
+        Integer p = friendPorts.get(user.toLowerCase());
+        if (p == null) return;
+        InetAddress addr = friendAddresses.get(user.toLowerCase());
+        if (addr != null) sendUdpRawTo(message, p, addr);
+        else sendUdpRaw(message, p);
     }
     
     private void updateFriendList(String n) { 
@@ -425,8 +730,31 @@ public class MainMenu extends Application {
     private void autoStartConnection() {
         new Thread(() -> { 
             startUdpReceiver(); 
-            try { Thread.sleep(800); for(int p=6000; p<=6015; p++) sendUdpRaw("LOGIN:"+username+":"+currentUdpPort, p); } catch(Exception e){} 
+            try {
+                Thread.sleep(800);
+                for(int p=6000; p<=6015; p++) {
+                    sendUdpRaw("LOGIN:"+username+":"+currentUdpPort, p);
+                    sendUdpRawTo("LOGIN:"+username+":"+currentUdpPort, p, InetAddress.getByName("255.255.255.255"));
+                }
+            } catch(Exception e){} 
         }).start();
+    }
+
+    private static class IncomingTransfer {
+        final String sender;
+        final String roomId;
+        final String fileType;
+        final String fileName;
+        final int totalChunks;
+        final Map<Integer, String> chunks = new ConcurrentHashMap<>();
+
+        IncomingTransfer(String sender, String roomId, String fileType, String fileName, int totalChunks) {
+            this.sender = sender;
+            this.roomId = roomId;
+            this.fileType = fileType;
+            this.fileName = fileName;
+            this.totalChunks = totalChunks;
+        }
     }
 
     public static void main(String[] args) { launch(args); }
