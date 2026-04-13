@@ -30,7 +30,11 @@ public class MainMenu extends Application {
     private HBox headerBox; 
     private Label chatHeaderName;
     private Label typingLabel; 
+    private Button groupInfoButton;
     private Stage mainStage;
+    private HBox bottomInputBar;
+    private StackPane chatCenterStack;
+    private VBox emptyStatePane;
     
     private Map<String, Integer> friendPorts = new HashMap<>(); 
     private Map<String, InetAddress> friendAddresses = new HashMap<>();
@@ -47,6 +51,7 @@ public class MainMenu extends Application {
     private final int FILE_CHUNK_SIZE = 48000;
 
     private final Map<String, IncomingTransfer> incomingTransfers = new ConcurrentHashMap<>();
+    private final Set<String> completedTransferIds = ConcurrentHashMap.newKeySet();
     private final AtomicInteger transferCounter = new AtomicInteger(1);
 
     @Override
@@ -116,6 +121,12 @@ public class MainMenu extends Application {
         HBox profile = new HBox(12, createAvatar(username), new VBox(new Label(username), new Label("Đang hoạt động")));
         ((Label)((VBox)profile.getChildren().get(1)).getChildren().get(1)).setStyle("-fx-text-fill: #31a24c; -fx-font-size: 12px;");
         ((Label)((VBox)profile.getChildren().get(1)).getChildren().get(0)).setStyle("-fx-font-weight: bold; -fx-font-size: 15px;");
+
+        Button btnAddFriend = new Button("+ Thêm Bạn");
+        btnAddFriend.setMaxWidth(Double.MAX_VALUE);
+        btnAddFriend.setPrefHeight(40);
+        btnAddFriend.setStyle("-fx-background-color: #22a45d; -fx-text-fill: white; -fx-font-weight: bold; -fx-background-radius: 8;");
+        btnAddFriend.setOnAction(e -> showAddFriendDialog());
 
         Button btnCreateGroup = new Button("+ Tạo Nhóm Mới");
         btnCreateGroup.setMaxWidth(Double.MAX_VALUE);
@@ -194,6 +205,14 @@ public class MainMenu extends Application {
                     name.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
                     
                     info.getChildren().add(name);
+
+                    if (item.startsWith("GROUP:")) {
+                        int memberCount = groupMembers.getOrDefault(item, Collections.emptyList()).size();
+                        Label memberInfo = new Label(memberCount + " thành viên");
+                        memberInfo.setStyle("-fx-text-fill: #5f6368; -fx-font-size: 11px;");
+                        info.getChildren().add(memberInfo);
+                    }
+
                     String last = lastMessages.get(item);
                     if (last != null) {
                         Label msg = new Label(last); msg.setStyle("-fx-text-fill: #65676b; -fx-font-size: 12px;");
@@ -218,13 +237,231 @@ public class MainMenu extends Application {
             if (newV != null) {
                 unreadCounts.put(newV, 0); friendList.refresh();
                 updateHeaderInfo(newV);
+                setChatSelectedState(true);
                 messageContainer.getChildren().clear();
                 loadHistory(newV); 
+            } else {
+                updateHeaderInfo("Vạn Tín Messenger");
+                setChatSelectedState(false);
             }
         });
 
-        left.getChildren().addAll(profile, btnCreateGroup, new Label("HỘI THOẠI"), friendList);
+        ContextMenu friendContextMenu = new ContextMenu();
+        MenuItem deleteFriendItem = new MenuItem("Xóa bạn");
+        deleteFriendItem.setOnAction(e -> removeSelectedFriend());
+        friendContextMenu.getItems().add(deleteFriendItem);
+
+        friendList.setOnContextMenuRequested(e -> {
+            String selected = friendList.getSelectionModel().getSelectedItem();
+            if (selected == null || selected.startsWith("GROUP:")) {
+                deleteFriendItem.setDisable(true);
+            } else {
+                deleteFriendItem.setDisable(false);
+            }
+        });
+        friendList.setContextMenu(friendContextMenu);
+
+        left.getChildren().addAll(profile, btnAddFriend, btnCreateGroup, new Label("HỘI THOẠI"), friendList);
         return left;
+    }
+
+    private void showAddFriendDialog() {
+        TextInputDialog dialog = new TextInputDialog("");
+        dialog.setTitle("Thêm bạn");
+        dialog.setHeaderText("Nhập username bạn muốn thêm");
+        dialog.setContentText("Username:");
+
+        Optional<String> result = dialog.showAndWait();
+        result.ifPresent(input -> {
+            String friend = input.trim().toLowerCase();
+            if (friend.isEmpty() || friend.equalsIgnoreCase(username) || friend.startsWith("group:")) return;
+
+            if (!friendList.getItems().contains(friend)) {
+                friendList.getItems().add(0, friend);
+                friendList.getSelectionModel().select(friend);
+            }
+        });
+    }
+
+    private void removeSelectedFriend() {
+        String selected = friendList.getSelectionModel().getSelectedItem();
+        if (selected == null) return;
+
+        if (selected.startsWith("GROUP:")) {
+            Alert info = new Alert(Alert.AlertType.INFORMATION);
+            info.setTitle("Không thể xóa");
+            info.setHeaderText("Mục đang chọn là nhóm");
+            info.setContentText("Chức năng Xóa bạn chỉ áp dụng cho bạn bè cá nhân, không áp dụng cho nhóm.");
+            info.showAndWait();
+            return;
+        }
+
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setTitle("Xóa bạn");
+        confirm.setHeaderText("Bạn có chắc muốn xóa " + selected + " không?");
+        confirm.setContentText("Sau khi xóa, cuộc trò chuyện với người này sẽ bị gỡ khỏi danh sách.");
+
+        Optional<ButtonType> choice = confirm.showAndWait();
+        if (choice.isPresent() && choice.get() == ButtonType.OK) {
+            friendList.getItems().remove(selected);
+            friendPorts.remove(selected.toLowerCase());
+            friendAddresses.remove(selected.toLowerCase());
+            unreadCounts.remove(selected);
+            lastMessages.remove(selected);
+
+            if (selected.equalsIgnoreCase(chatHeaderName.getText())) {
+                chatHeaderName.setText("Vạn Tín Messenger");
+                messageContainer.getChildren().clear();
+            }
+        }
+    }
+
+    private void showGroupInfoDialog() {
+        String groupId = friendList.getSelectionModel().getSelectedItem();
+        if (groupId == null || !groupId.startsWith("GROUP:")) return;
+
+        List<String> members = groupMembers.computeIfAbsent(groupId, k -> new ArrayList<>());
+
+        Dialog<Void> dialog = new Dialog<>();
+        dialog.setTitle("Thông tin nhóm");
+        dialog.setHeaderText(groupId.substring(6));
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+        VBox root = new VBox(12);
+        root.setPadding(new Insets(10));
+
+        Label lblCount = new Label("Số lượng thành viên: " + members.size());
+        lblCount.setStyle("-fx-font-weight: bold; -fx-text-fill: #1877f2;");
+
+        Label lblMembers = new Label("Thành viên:");
+        ListView<String> memberView = new ListView<>();
+        memberView.getItems().setAll(members);
+        memberView.setPrefHeight(180);
+
+        TextField txtSearchMember = new TextField();
+        txtSearchMember.setPromptText("Tìm bạn bè để thêm vào nhóm...");
+
+        ListView<String> friendSuggestView = new ListView<>();
+        friendSuggestView.setPrefHeight(120);
+
+        Runnable reloadFriendSuggestions = () -> {
+            String keyword = txtSearchMember.getText() == null ? "" : txtSearchMember.getText().trim().toLowerCase();
+            List<String> suggestions = new ArrayList<>();
+            for (String f : friendList.getItems()) {
+                if (f == null || f.startsWith("GROUP:")) continue;
+                if (members.contains(f)) continue;
+                if (!keyword.isEmpty() && !f.toLowerCase().contains(keyword)) continue;
+                suggestions.add(f);
+            }
+            friendSuggestView.getItems().setAll(suggestions);
+        };
+        reloadFriendSuggestions.run();
+
+        txtSearchMember.textProperty().addListener((obs, oldV, newV) -> reloadFriendSuggestions.run());
+
+        Button btnAddMember = new Button("Thêm thành viên");
+        btnAddMember.setOnAction(e -> {
+            String picked = friendSuggestView.getSelectionModel().getSelectedItem();
+            if (picked == null || picked.isEmpty() || members.contains(picked)) return;
+            members.add(picked);
+            memberView.getItems().setAll(members);
+            lblCount.setText("Số lượng thành viên: " + members.size());
+            friendList.refresh();
+            txtSearchMember.clear();
+            reloadFriendSuggestions.run();
+        });
+
+        friendSuggestView.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2) {
+                String picked = friendSuggestView.getSelectionModel().getSelectedItem();
+                if (picked == null || members.contains(picked)) return;
+                members.add(picked);
+                memberView.getItems().setAll(members);
+                lblCount.setText("Số lượng thành viên: " + members.size());
+                friendList.refresh();
+                txtSearchMember.clear();
+                reloadFriendSuggestions.run();
+            }
+        });
+
+        Button btnRemoveMember = new Button("Xóa thành viên đã chọn");
+        btnRemoveMember.setOnAction(e -> {
+            String selected = memberView.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            if (selected.equalsIgnoreCase(username)) {
+                Alert alert = new Alert(Alert.AlertType.INFORMATION, "Không thể xóa chính bạn khỏi nhóm ở bản cơ bản này.", ButtonType.OK);
+                alert.setHeaderText("Không thể xóa");
+                alert.showAndWait();
+                return;
+            }
+            members.remove(selected);
+            memberView.getItems().setAll(members);
+            lblCount.setText("Số lượng thành viên: " + members.size());
+            friendList.refresh();
+            reloadFriendSuggestions.run();
+        });
+
+        Button btnFileHistory = new Button("Xem lịch sử file gửi");
+        btnFileHistory.setOnAction(e -> showGroupFileHistory(groupId));
+
+        HBox actionRow = new HBox(10, btnAddMember, btnRemoveMember, btnFileHistory);
+        actionRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label lblSearch = new Label("Tìm bạn bè để thêm:");
+        root.getChildren().addAll(lblCount, lblMembers, memberView, lblSearch, txtSearchMember, friendSuggestView, actionRow);
+        dialog.getDialogPane().setContent(root);
+        dialog.showAndWait();
+    }
+
+    private void showGroupFileHistory(String groupId) {
+        List<String> fileEntries = new ArrayList<>();
+        Path history = Paths.get(HISTORY_DIR + getChatFileName(groupId));
+
+        if (Files.exists(history)) {
+            try {
+                for (String line : Files.readAllLines(history)) {
+                    String[] pts = line.split("\\|SEP\\|", 2);
+                    if (pts.length != 2) continue;
+                    String sender = pts[0];
+                    String msg = pts[1];
+                    if (!isAttachmentMessage(msg)) continue;
+
+                    String[] p = msg.split("\\|", 4);
+                    if (p.length < 4) continue;
+                    String type = "IMG".equalsIgnoreCase(p[1]) ? "[Ảnh]" : "[File]";
+                    fileEntries.add(type + " " + p[2] + " - gửi bởi " + sender + "|PATH|" + p[3]);
+                }
+            } catch (IOException e) {
+                // ignore
+            }
+        }
+
+        Dialog<Void> dlg = new Dialog<>();
+        dlg.setTitle("Lịch sử file đã gửi");
+        dlg.setHeaderText(groupId.substring(6));
+        dlg.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+        VBox box = new VBox(10);
+        box.setPadding(new Insets(10));
+
+        ListView<String> lv = new ListView<>();
+        for (String entry : fileEntries) {
+            String[] p = entry.split("\\|PATH\\|", 2);
+            lv.getItems().add(p[0]);
+        }
+        lv.setPrefHeight(260);
+
+        Button btnOpen = new Button("Mở file đã chọn");
+        btnOpen.setOnAction(e -> {
+            int idx = lv.getSelectionModel().getSelectedIndex();
+            if (idx < 0 || idx >= fileEntries.size()) return;
+            String[] p = fileEntries.get(idx).split("\\|PATH\\|", 2);
+            if (p.length == 2) openFile(Paths.get(p[1]));
+        });
+
+        box.getChildren().addAll(lv, btnOpen);
+        dlg.getDialogPane().setContent(box);
+        dlg.showAndWait();
     }
 
     private BorderPane createCenterPanel(Stage stage) {
@@ -232,18 +469,41 @@ public class MainMenu extends Application {
         chatHeaderName = new Label("Vạn Tín Messenger");
         chatHeaderName.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
         typingLabel = new Label(""); 
-        headerBox = new HBox(15, new VBox(2, chatHeaderName, typingLabel));
+        groupInfoButton = new Button("Thông tin nhóm");
+        groupInfoButton.setStyle("-fx-background-color: #eef3ff; -fx-text-fill: #1877f2; -fx-font-weight: bold; -fx-background-radius: 8;");
+        groupInfoButton.setDisable(true);
+        groupInfoButton.setVisible(false);
+        groupInfoButton.setManaged(false);
+        groupInfoButton.setOnAction(e -> showGroupInfoDialog());
+
+        Region headerSpacer = new Region();
+        HBox.setHgrow(headerSpacer, Priority.ALWAYS);
+        headerBox = new HBox(15, new VBox(2, chatHeaderName, typingLabel), headerSpacer, groupInfoButton);
         headerBox.setAlignment(Pos.CENTER_LEFT);
         headerBox.setPadding(new Insets(15, 25, 15, 25));
         headerBox.setStyle("-fx-background-color: white; -fx-border-color: transparent transparent #d9dce1 transparent;");
-        
+
         messageContainer = new VBox(15); messageContainer.setPadding(new Insets(20));
         messageScroll = new ScrollPane(messageContainer); messageScroll.setFitToWidth(true);
         messageScroll.setStyle("-fx-background: #f0f2f5; -fx-background-color: #f0f2f5;");
-        
-        HBox bottom = new HBox(12); bottom.setPadding(new Insets(15, 25, 15, 25));
-        bottom.setStyle("-fx-background-color: white;");
-        
+
+        emptyStatePane = new VBox(16);
+        emptyStatePane.setAlignment(Pos.CENTER);
+        emptyStatePane.setStyle("-fx-background-color: linear-gradient(to bottom, #f7f9fc, #eef2f7);");
+
+        Label welcomeTitle = new Label("Chào mừng đến với Vạn Tín Messenger");
+        welcomeTitle.setStyle("-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #1d3557;");
+        Label welcomeSub = new Label("Chọn một bạn bè hoặc nhóm ở bên trái để bắt đầu trò chuyện");
+        welcomeSub.setStyle("-fx-font-size: 14px; -fx-text-fill: #5f6368;");
+        Label welcomeHint = new Label("Mẹo demo: Gửi ảnh/file để hiển thị preview đẹp trong bong bóng chat");
+        welcomeHint.setStyle("-fx-font-size: 13px; -fx-text-fill: #7a8087;");
+        emptyStatePane.getChildren().addAll(createAvatar(username), welcomeTitle, welcomeSub, welcomeHint);
+
+        chatCenterStack = new StackPane(emptyStatePane, messageScroll);
+
+        bottomInputBar = new HBox(12); bottomInputBar.setPadding(new Insets(15, 25, 15, 25));
+        bottomInputBar.setStyle("-fx-background-color: white;");
+
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
         messageField.setStyle("-fx-background-radius: 20; -fx-padding: 10 15; -fx-background-color: #f0f2f5;");
@@ -258,8 +518,9 @@ public class MainMenu extends Application {
         btnAttach.setStyle("-fx-font-size: 18px; -fx-background-color: transparent;");
         btnAttach.setOnAction(e -> sendAttachment());
 
-        bottom.getChildren().addAll(btnAttach, messageField, btnSend);
-        center.setTop(headerBox); center.setCenter(messageScroll); center.setBottom(bottom);
+        bottomInputBar.getChildren().addAll(btnAttach, messageField, btnSend);
+        center.setTop(headerBox); center.setCenter(chatCenterStack); center.setBottom(bottomInputBar);
+        setChatSelectedState(false);
         return center;
     }
 
@@ -410,6 +671,8 @@ public class MainMenu extends Application {
                         String[] pts = rawData.split(":", 8);
                         if (pts.length >= 8 && pts[3].trim().equalsIgnoreCase(username)) {
                             String transferId = pts[1].trim();
+                            if (completedTransferIds.contains(transferId) || incomingTransfers.containsKey(transferId)) continue;
+
                             String sender = pts[2].trim();
                             String fileType = pts[4].trim();
                             String fileName = pts[5].trim();
@@ -423,6 +686,8 @@ public class MainMenu extends Application {
                         String[] pts = rawData.split(":", 8);
                         if (pts.length >= 8) {
                             String transferId = pts[1].trim();
+                            if (completedTransferIds.contains(transferId) || incomingTransfers.containsKey(transferId)) continue;
+
                             String sender = pts[2].trim();
                             String groupID = pts[3].trim();
                             String fileType = pts[4].trim();
@@ -497,12 +762,15 @@ public class MainMenu extends Application {
     }
 
     private void appendChunk(String transferId, int chunkIndex, String chunkData) {
+        if (completedTransferIds.contains(transferId)) return;
         IncomingTransfer transfer = incomingTransfers.get(transferId);
         if (transfer == null) return;
         transfer.chunks.put(chunkIndex, chunkData);
     }
 
     private void finalizeIncomingTransfer(String transferId) {
+        if (completedTransferIds.contains(transferId)) return;
+
         IncomingTransfer transfer = incomingTransfers.remove(transferId);
         if (transfer == null) return;
 
@@ -522,6 +790,7 @@ public class MainMenu extends Application {
 
             String payload = buildAttachmentPayload(transfer.fileType, cleanName, out.toAbsolutePath().toString());
             handleIncoming(transfer.roomId, transfer.sender, payload, false);
+            completedTransferIds.add(transferId);
         } catch (Exception e) {
             // ignore
         }
@@ -678,14 +947,39 @@ public class MainMenu extends Application {
     }
 
     private void updateHeaderInfo(String name) {
-        headerBox.getChildren().clear(); 
         // --- XÓA CHỮ GROUP: KHI HIỆN TRÊN HEADER ---
         String displayName = name.startsWith("GROUP:") ? name.substring(6) : name;
         chatHeaderName.setText(displayName);
-        
-        VBox v = new VBox(2, chatHeaderName, typingLabel);
-        StackPane avt = createAvatar(name); ((Circle)avt.getChildren().get(0)).setRadius(20);
-        headerBox.getChildren().addAll(avt, v);
+
+        if (name.startsWith("GROUP:")) {
+            int memberCount = groupMembers.getOrDefault(name, Collections.emptyList()).size();
+            typingLabel.setText(memberCount + " thành viên");
+            typingLabel.setStyle("-fx-text-fill: #5f6368; -fx-font-size: 12px;");
+        } else {
+            typingLabel.setText("");
+        }
+
+        if (groupInfoButton != null) {
+            boolean isGroup = name.startsWith("GROUP:");
+            groupInfoButton.setDisable(!isGroup);
+            groupInfoButton.setVisible(isGroup);
+            groupInfoButton.setManaged(isGroup);
+        }
+    }
+
+    private void setChatSelectedState(boolean selected) {
+        if (messageScroll != null) {
+            messageScroll.setVisible(selected);
+            messageScroll.setManaged(selected);
+        }
+        if (emptyStatePane != null) {
+            emptyStatePane.setVisible(!selected);
+            emptyStatePane.setManaged(!selected);
+        }
+        if (bottomInputBar != null) {
+            bottomInputBar.setVisible(selected);
+            bottomInputBar.setManaged(selected);
+        }
     }
 
     private StackPane createAvatar(String name) {
