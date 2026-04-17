@@ -28,8 +28,10 @@ import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.Base64;
+
+import Chatbox.network.TcpFileReceiver;
+import Chatbox.network.TcpFileSender;
 
 public class TcpMainMenu extends Application {
     public static void main(String[] args) {
@@ -141,9 +143,9 @@ public class TcpMainMenu extends Application {
             switch (parts[0]) {
                 case "MSG" -> addBubble(parts[1] + ": " + decode(parts[2]), false);
                 case "FILE" -> {
-                    if (parts.length < 4) return;
-                    String name = decode(parts[2]);
-                    String payload = parts[3];
+                    String name = TcpFileReceiver.getFileName(line);
+                    String payload = TcpFileReceiver.getEncodedData(line);
+                    if (name == null || payload == null) return;
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
                     addFileBubble(name, payload, image, false);
                 }
@@ -168,12 +170,12 @@ public class TcpMainMenu extends Application {
         File file = chooser.showOpenDialog(stage);
         if (file == null) return;
         try {
-            byte[] bytes = Files.readAllBytes(file.toPath());
-            String encodedBytes = Base64.getEncoder().encodeToString(bytes);
             String name = file.getName();
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
+            String payload = TcpFileSender.encodeFile(file);
+            String encodedBytes = TcpFileReceiver.getEncodedData(payload);
             addFileBubble(name, encodedBytes, image, true);
-            sendRaw("FILE|" + encode(nameField.getText().trim()) + "|" + encode(name) + "|" + encodedBytes);
+            sendRaw(payload);
         } catch (Exception ex) {
             showAlert("Không thể gửi file: " + ex.getMessage());
         }

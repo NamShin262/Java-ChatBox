@@ -23,8 +23,10 @@ import javafx.stage.Stage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.Base64;
+
+import Chatbox.network.UdpFileReceiver;
+import Chatbox.network.UdpFileSender;
 
 public class UdpMainMenu extends Application {
     public static void main(String[] args) {
@@ -129,9 +131,9 @@ public class UdpMainMenu extends Application {
             switch (parts[0]) {
                 case "MSG" -> addBubble(parts[1] + ": " + decode(parts[2]), false);
                 case "FILE" -> {
-                    if (parts.length < 4) return;
-                    String name = decode(parts[2]);
-                    String payload = parts[3];
+                    String name = UdpFileReceiver.getFileName(line);
+                    String payload = UdpFileReceiver.getEncodedData(line);
+                    if (name == null || payload == null) return;
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
                     addFileBubble(name, payload, image, false);
                 }
@@ -156,12 +158,11 @@ public class UdpMainMenu extends Application {
         File file = chooser.showOpenDialog(stage);
         if (file == null) return;
         try {
-            byte[] bytes = Files.readAllBytes(file.toPath());
-            String encodedBytes = Base64.getEncoder().encodeToString(bytes);
+            String payload = UdpFileSender.encodeFile(file);
             String name = file.getName();
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-            addFileBubble(name, encodedBytes, image, true);
-            sendRaw("FILE|" + encode(nameField.getText().trim()) + "|" + encode(name) + "|" + encodedBytes);
+            addFileBubble(name, Base64.getEncoder().encodeToString(java.nio.file.Files.readAllBytes(file.toPath())), image, true);
+            sendRaw(payload);
         } catch (Exception ex) {
             showAlert("Không thể gửi file: " + ex.getMessage());
         }
