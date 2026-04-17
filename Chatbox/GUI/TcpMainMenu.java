@@ -200,24 +200,21 @@ public class TcpMainMenu extends Application {
     private void addBubble(String text, boolean isMe) {
         Label label = new Label(text);
         label.setWrapText(true);
-        label.setStyle(isMe
-                ? "-fx-background-color:#1877f2;-fx-text-fill:white;-fx-padding:10 14;-fx-background-radius:18;"
-                : "-fx-background-color:#e4e6eb;-fx-text-fill:black;-fx-padding:10 14;-fx-background-radius:18;");
-        HBox row = new HBox(label);
-        row.setAlignment(isMe ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
-        messageBox.getChildren().add(row);
+        label.setStyle("-fx-padding: 2 0 2 0; -fx-text-fill: black;");
+        messageBox.getChildren().add(label);
     }
 
     private void addFileBubble(String name, String encodedBytes, boolean image, boolean isMe) {
-        VBox content = new VBox(6);
-        content.getChildren().add(new Label((image ? "[Ảnh] " : "[File] ") + name));
+        Label title = new Label((isMe ? nameField.getText().trim() : "") + ": " + (image ? "[Ảnh] " : "[File] ") + name);
+        title.setStyle("-fx-padding: 2 0 2 0; -fx-text-fill: black;");
+        messageBox.getChildren().add(title);
         try {
             if (image) {
                 byte[] bytes = Base64.getDecoder().decode(encodedBytes);
                 ImageView iv = new ImageView(new Image(new ByteArrayInputStream(bytes)));
                 iv.setFitWidth(220);
                 iv.setPreserveRatio(true);
-                content.getChildren().add(iv);
+                messageBox.getChildren().add(iv);
             } else {
                 byte[] bytes = Base64.getDecoder().decode(encodedBytes);
                 String text = new String(bytes, StandardCharsets.UTF_8);
@@ -226,19 +223,11 @@ public class TcpMainMenu extends Application {
                 ta.setWrapText(true);
                 ta.setPrefRowCount(4);
                 ta.setPrefWidth(320);
-                content.getChildren().add(ta);
+                messageBox.getChildren().add(ta);
             }
         } catch (Exception ex) {
-            content.getChildren().add(new Label("[Không mở được nội dung]"));
+            messageBox.getChildren().add(new Label("[Không mở được nội dung]"));
         }
-
-        VBox bubble = new VBox(content);
-        bubble.setStyle(isMe
-                ? "-fx-background-color:#1877f2;-fx-text-fill:white;-fx-padding:10;-fx-background-radius:18;"
-                : "-fx-background-color:#e4e6eb;-fx-text-fill:black;-fx-padding:10;-fx-background-radius:18;");
-        HBox row = new HBox(bubble);
-        row.setAlignment(isMe ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
-        messageBox.getChildren().add(row);
     }
 
     private String encode(String text) {
