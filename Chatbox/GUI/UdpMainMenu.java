@@ -232,15 +232,15 @@ public class UdpMainMenu extends Application {
     }
 
     private void sendQuadraticProblem() {
-        Optional<String> aInput = askInput("Phương trình bậc 2", "Nhập hệ số a:", "1");
+        Optional<String> aInput = askInput("Phương trình bậc 2", "Nhập hệ số a:", "");
         if (aInput.isEmpty()) {
             return;
         }
-        Optional<String> bInput = askInput("Phương trình bậc 2", "Nhập hệ số b:", "-3");
+        Optional<String> bInput = askInput("Phương trình bậc 2", "Nhập hệ số b:", "");
         if (bInput.isEmpty()) {
             return;
         }
-        Optional<String> cInput = askInput("Phương trình bậc 2", "Nhập hệ số c:", "2");
+        Optional<String> cInput = askInput("Phương trình bậc 2", "Nhập hệ số c:", "");
         if (cInput.isEmpty()) {
             return;
         }
