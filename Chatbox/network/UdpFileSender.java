@@ -9,10 +9,7 @@ public class UdpFileSender {
     public static String encodeFile(File file) throws java.io.IOException {
         byte[] bytes = Files.readAllBytes(file.toPath());
         String encodedBytes = Base64.getEncoder().encodeToString(bytes);
-        return "FILE|" + encode(file.getName()) + "|" + encodedBytes;
-    }
-
-    private static String encode(String text) {
-        return Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8));
+        String fileName = Base64.getEncoder().encodeToString(file.getName().getBytes(StandardCharsets.UTF_8));
+        return "FILE|" + fileName + "|" + encodedBytes;
     }
 }

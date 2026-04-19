@@ -11,6 +11,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputDialog;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
@@ -29,6 +30,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Optional;
 
 import Chatbox.network.TcpFileReceiver;
 import Chatbox.network.TcpFileSender;
@@ -59,7 +61,7 @@ public class TcpMainMenu extends Application {
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
 
-        statusLabel = new Label("TCP local port: " + localPort);
+        statusLabel = new Label("TCP local port: " + localPort + " | Reliable mode");
         messageBox = new VBox(8);
         messageBox.setPadding(new Insets(10));
 
@@ -73,6 +75,12 @@ public class TcpMainMenu extends Application {
         Button fileButton = new Button("Gửi file/ảnh");
         fileButton.setOnAction(e -> sendFile());
 
+        Button quadraticButton = new Button("PT bậc 2");
+        quadraticButton.setOnAction(e -> sendQuadraticProblem());
+
+        Button quizButton = new Button("Tạo câu đố");
+        quizButton.setOnAction(e -> sendQuiz());
+
         HBox top = new HBox(10,
                 new Label("Tên:"), nameField,
                 new Label("Peer port:"), peerPortField,
@@ -80,7 +88,7 @@ public class TcpMainMenu extends Application {
         top.setAlignment(Pos.CENTER_LEFT);
         top.setPadding(new Insets(10));
 
-        HBox bottom = new HBox(10, messageField, sendButton, fileButton);
+        HBox bottom = new HBox(10, messageField, sendButton, fileButton, quadraticButton, quizButton);
         HBox.setHgrow(messageField, Priority.ALWAYS);
         bottom.setPadding(new Insets(10));
 
@@ -90,10 +98,11 @@ public class TcpMainMenu extends Application {
         root.setBottom(bottom);
         root.setPadding(new Insets(10));
 
-        primaryStage.setTitle("TCP Chat");
-        primaryStage.setScene(new Scene(root, 900, 600));
+        primaryStage.setTitle("TCP Chat + Ứng dụng");
+        primaryStage.setScene(new Scene(root, 980, 620));
         primaryStage.show();
 
+        addSystemLine("TCP demo: chat, gửi file, giải phương trình bậc 2 và trò chơi đố chữ.");
         startReceiver();
     }
 
@@ -106,7 +115,10 @@ public class TcpMainMenu extends Application {
             } catch (Exception ex) {
             } finally {
                 if (serverSocketCheck != null) {
-                    try { serverSocketCheck.close(); } catch (Exception ignored) {}
+                    try {
+                        serverSocketCheck.close();
+                    } catch (Exception ignored) {
+                    }
                 }
             }
         }
@@ -137,17 +149,44 @@ public class TcpMainMenu extends Application {
     }
 
     private void handleIncoming(String line) {
-        String[] parts = line.split("\\|", 4);
-        if (parts.length < 3) return;
+        String[] parts = line.split("\\|", 6);
+        if (parts.length < 1) {
+            return;
+        }
         Platform.runLater(() -> {
             switch (parts[0]) {
-                case "MSG" -> addBubble(parts[1] + ": " + decode(parts[2]), false);
+                case "MSG" -> {
+                    if (parts.length >= 3) {
+                        addLine(decode(parts[1]) + ": " + decode(parts[2]));
+                    }
+                }
                 case "FILE" -> {
                     String name = TcpFileReceiver.getFileName(line);
                     String payload = TcpFileReceiver.getEncodedData(line);
-                    if (name == null || payload == null) return;
+                    if (name == null || payload == null) {
+                        return;
+                    }
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-                    addFileBubble(name, payload, image, false);
+                    addLine((image ? "[Ảnh] " : "[File] ") + name);
+                    addFileContent(payload, image);
+                }
+                case "QUAD" -> {
+                    if (parts.length >= 5) {
+                        showQuadraticResult(decode(parts[1]), decode(parts[2]), decode(parts[3]), decode(parts[4]));
+                    }
+                }
+                case "QUIZ" -> {
+                    if (parts.length >= 4) {
+                        showQuizCard(decode(parts[1]), decode(parts[2]), decode(parts[3]));
+                    }
+                }
+                case "QUIZ_RESULT" -> {
+                    if (parts.length >= 4) {
+                        addSystemLine(decode(parts[1]) + " trả lời câu đố của bạn: " + decode(parts[2])
+                                + " -> " + decode(parts[3]));
+                    }
+                }
+                default -> {
                 }
             }
         });
@@ -155,8 +194,10 @@ public class TcpMainMenu extends Application {
 
     private void sendMessage() {
         String text = messageField.getText().trim();
-        if (text.isEmpty()) return;
-        addBubble(nameField.getText().trim() + ": " + text, true);
+        if (text.isEmpty()) {
+            return;
+        }
+        addLine(nameField.getText().trim() + ": " + text);
         sendRaw("MSG|" + encode(nameField.getText().trim()) + "|" + encode(text));
         messageField.clear();
     }
@@ -168,17 +209,139 @@ public class TcpMainMenu extends Application {
                 new FileChooser.ExtensionFilter("Text/Images", "*.txt", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp")
         );
         File file = chooser.showOpenDialog(stage);
-        if (file == null) return;
+        if (file == null) {
+            return;
+        }
         try {
             String name = file.getName();
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
             String payload = TcpFileSender.encodeFile(file);
             String encodedBytes = TcpFileReceiver.getEncodedData(payload);
-            addFileBubble(name, encodedBytes, image, true);
+            addLine(nameField.getText().trim() + ": " + (image ? "[Ảnh] " : "[File] ") + name);
+            addFileContent(encodedBytes, image);
             sendRaw(payload);
         } catch (Exception ex) {
             showAlert("Không thể gửi file: " + ex.getMessage());
         }
+    }
+
+    private void sendQuadraticProblem() {
+        Optional<String> aInput = askInput("Phương trình bậc 2", "Nhập hệ số a:", "1");
+        if (aInput.isEmpty()) {
+            return;
+        }
+        Optional<String> bInput = askInput("Phương trình bậc 2", "Nhập hệ số b:", "-3");
+        if (bInput.isEmpty()) {
+            return;
+        }
+        Optional<String> cInput = askInput("Phương trình bậc 2", "Nhập hệ số c:", "2");
+        if (cInput.isEmpty()) {
+            return;
+        }
+
+        String a = aInput.get().trim();
+        String b = bInput.get().trim();
+        String c = cInput.get().trim();
+        if (!isDouble(a) || !isDouble(b) || !isDouble(c)) {
+            showAlert("Các hệ số phải là số hợp lệ.");
+            return;
+        }
+
+        addSystemLine("Bạn đã gửi bài toán bậc 2: " + formatEquation(a, b, c));
+        sendRaw("QUAD|" + encode(nameField.getText().trim()) + "|" + encode(a) + "|" + encode(b) + "|" + encode(c));
+    }
+
+    private void showQuadraticResult(String sender, String aText, String bText, String cText) {
+        double a = Double.parseDouble(aText);
+        double b = Double.parseDouble(bText);
+        double c = Double.parseDouble(cText);
+
+        String result;
+        if (a == 0) {
+            if (b == 0) {
+                result = c == 0 ? "Vô số nghiệm" : "Vô nghiệm";
+            } else {
+                result = "Phương trình bậc nhất, nghiệm x = " + formatNumber(-c / b);
+            }
+        } else {
+            double delta = b * b - 4 * a * c;
+            if (delta < 0) {
+                result = "Vô nghiệm";
+            } else if (delta == 0) {
+                result = "Nghiệm kép x = " + formatNumber(-b / (2 * a));
+            } else {
+                double sqrtDelta = Math.sqrt(delta);
+                double x1 = (-b + sqrtDelta) / (2 * a);
+                double x2 = (-b - sqrtDelta) / (2 * a);
+                result = "x1 = " + formatNumber(x1) + ", x2 = " + formatNumber(x2);
+            }
+        }
+
+        addSystemLine(sender + " gửi bài toán: " + formatEquation(aText, bText, cText));
+        addSystemLine("Kết quả tính nhanh qua TCP: " + result);
+    }
+
+    private void sendQuiz() {
+        Optional<String> hintInput = askInput("Tạo câu đố", "Nhập gợi ý cho câu đố:", "Tên thủ đô của Việt Nam?");
+        if (hintInput.isEmpty()) {
+            return;
+        }
+        Optional<String> answerInput = askInput("Tạo câu đố", "Nhập đáp án:", "Hà Nội");
+        if (answerInput.isEmpty()) {
+            return;
+        }
+
+        String hint = hintInput.get().trim();
+        String answer = answerInput.get().trim();
+        if (hint.isEmpty() || answer.isEmpty()) {
+            showAlert("Gợi ý và đáp án không được để trống.");
+            return;
+        }
+
+        addSystemLine("Bạn đã gửi câu đố: " + hint);
+        sendRaw("QUIZ|" + encode(nameField.getText().trim()) + "|" + encode(hint) + "|" + encode(answer));
+    }
+
+    private void showQuizCard(String sender, String hint, String answer) {
+        VBox card = new VBox(8);
+        card.setPadding(new Insets(10));
+        card.setStyle("-fx-background-color: #eef6ff; -fx-border-color: #6aa9ff; -fx-border-radius: 6; -fx-background-radius: 6;");
+
+        Label title = new Label(sender + " gửi câu đố:");
+        title.setStyle("-fx-font-weight: bold;");
+        Label hintLabel = new Label("Gợi ý: " + hint);
+        hintLabel.setWrapText(true);
+
+        TextField answerField = new TextField();
+        answerField.setPromptText("Nhập đáp án của bạn");
+        Button submitButton = new Button("Trả lời");
+        Label resultLabel = new Label();
+
+        submitButton.setOnAction(e -> {
+            String guess = answerField.getText().trim();
+            if (guess.isEmpty()) {
+                resultLabel.setText("Bạn chưa nhập đáp án.");
+                return;
+            }
+            boolean correct = guess.equalsIgnoreCase(answer.trim());
+            String result = correct ? "Đúng rồi" : "Sai rồi";
+            resultLabel.setText(result + ". Đáp án: " + answer);
+            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim()) + "|" + encode(guess) + "|" + encode(result));
+            submitButton.setDisable(true);
+        });
+
+        HBox actionRow = new HBox(8, answerField, submitButton);
+        HBox.setHgrow(answerField, Priority.ALWAYS);
+        card.getChildren().addAll(title, hintLabel, actionRow, resultLabel);
+        messageBox.getChildren().add(card);
+    }
+
+    private Optional<String> askInput(String title, String header, String defaultValue) {
+        TextInputDialog dialog = new TextInputDialog(defaultValue);
+        dialog.setTitle(title);
+        dialog.setHeaderText(header);
+        dialog.setContentText("Giá trị:");
+        return dialog.showAndWait();
     }
 
     private void sendRaw(String payload) {
@@ -197,17 +360,21 @@ public class TcpMainMenu extends Application {
         }
     }
 
-    private void addBubble(String text, boolean isMe) {
+    private void addLine(String text) {
         Label label = new Label(text);
         label.setWrapText(true);
         label.setStyle("-fx-padding: 2 0 2 0; -fx-text-fill: black;");
         messageBox.getChildren().add(label);
     }
 
-    private void addFileBubble(String name, String encodedBytes, boolean image, boolean isMe) {
-        Label title = new Label((isMe ? nameField.getText().trim() : "") + ": " + (image ? "[Ảnh] " : "[File] ") + name);
-        title.setStyle("-fx-padding: 2 0 2 0; -fx-text-fill: black;");
-        messageBox.getChildren().add(title);
+    private void addSystemLine(String text) {
+        Label label = new Label("[TCP App] " + text);
+        label.setWrapText(true);
+        label.setStyle("-fx-padding: 4 0 4 0; -fx-text-fill: #006400; -fx-font-style: italic;");
+        messageBox.getChildren().add(label);
+    }
+
+    private void addFileContent(String encodedBytes, boolean image) {
         try {
             if (image) {
                 byte[] bytes = Base64.getDecoder().decode(encodedBytes);
@@ -236,6 +403,26 @@ public class TcpMainMenu extends Application {
 
     private String decode(String base64) {
         return new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+    }
+
+    private boolean isDouble(String value) {
+        try {
+            Double.parseDouble(value);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String formatEquation(String a, String b, String c) {
+        return a + "x² + " + b + "x + " + c + " = 0";
+    }
+
+    private String formatNumber(double value) {
+        if (value == (long) value) {
+            return String.valueOf((long) value);
+        }
+        return String.format("%.2f", value);
     }
 
     private void showAlert(String msg) {

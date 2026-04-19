@@ -11,6 +11,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputDialog;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
@@ -24,6 +25,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Optional;
 
 import Chatbox.network.UdpFileReceiver;
 import Chatbox.network.UdpFileSender;
@@ -32,6 +34,8 @@ public class UdpMainMenu extends Application {
     public static void main(String[] args) {
         launch(args);
     }
+
+    private static final int UDP_WARNING_PAYLOAD_BYTES = 60_000;
 
     private final int startPort = 6000;
     private final int endPort = 6010;
@@ -42,8 +46,11 @@ public class UdpMainMenu extends Application {
     private TextField peerPortField;
     private TextField messageField;
     private Label statusLabel;
+    private Label demoInfoLabel;
     private Stage stage;
     private java.net.DatagramSocket socket;
+    private int outgoingPacketCounter = 0;
+    private int incomingPacketCounter = 0;
 
     @Override
     public void start(Stage primaryStage) {
@@ -55,7 +62,11 @@ public class UdpMainMenu extends Application {
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
 
-        statusLabel = new Label("UDP local port: " + localPort);
+        statusLabel = new Label("UDP local port: " + localPort + " | Connectionless datagram mode");
+        demoInfoLabel = new Label(
+                "UDP demo: mỗi lần gửi là 1 datagram độc lập; ứng dụng vẫn hoạt động đầy đủ, nhưng dữ liệu lớn có thể không phù hợp bằng TCP.");
+        demoInfoLabel.setStyle("-fx-text-fill: #b22222; -fx-font-weight: bold;");
+
         messageBox = new VBox(8);
         messageBox.setPadding(new Insets(10));
 
@@ -69,6 +80,12 @@ public class UdpMainMenu extends Application {
         Button fileButton = new Button("Gửi file/ảnh");
         fileButton.setOnAction(e -> sendFile());
 
+        Button quadraticButton = new Button("PT bậc 2");
+        quadraticButton.setOnAction(e -> sendQuadraticProblem());
+
+        Button quizButton = new Button("Tạo câu đố");
+        quizButton.setOnAction(e -> sendQuiz());
+
         HBox top = new HBox(10,
                 new Label("Tên:"), nameField,
                 new Label("Peer port:"), peerPortField,
@@ -76,20 +93,24 @@ public class UdpMainMenu extends Application {
         top.setAlignment(Pos.CENTER_LEFT);
         top.setPadding(new Insets(10));
 
-        HBox bottom = new HBox(10, messageField, sendButton, fileButton);
+        VBox topContainer = new VBox(8, top, demoInfoLabel);
+        topContainer.setPadding(new Insets(0, 0, 10, 0));
+
+        HBox bottom = new HBox(10, messageField, sendButton, fileButton, quadraticButton, quizButton);
         HBox.setHgrow(messageField, Priority.ALWAYS);
         bottom.setPadding(new Insets(10));
 
         BorderPane root = new BorderPane();
-        root.setTop(top);
+        root.setTop(topContainer);
         root.setCenter(scrollPane);
         root.setBottom(bottom);
         root.setPadding(new Insets(10));
 
-        primaryStage.setTitle("UDP Chat");
-        primaryStage.setScene(new Scene(root, 900, 600));
+        primaryStage.setTitle("UDP Chat + Ứng dụng");
+        primaryStage.setScene(new Scene(root, 1040, 640));
         primaryStage.show();
 
+        addSystemLine("UDP đang chạy ở chế độ datagram: không tạo kết nối, gửi từng gói độc lập.");
         startReceiver();
     }
 
@@ -101,7 +122,9 @@ public class UdpMainMenu extends Application {
                 return p;
             } catch (Exception ignored) {
             } finally {
-                if (socketCheck != null) socketCheck.close();
+                if (socketCheck != null) {
+                    socketCheck.close();
+                }
             }
         }
         return startPort;
@@ -115,8 +138,9 @@ public class UdpMainMenu extends Application {
                 while (true) {
                     java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length);
                     socket.receive(packet);
+                    incomingPacketCounter++;
                     String line = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
-                    handleIncoming(line);
+                    handleIncoming(line, packet.getLength(), incomingPacketCounter);
                 }
             } catch (Exception e) {
                 Platform.runLater(() -> showAlert("Lỗi UDP receiver: " + e.getMessage()));
@@ -124,19 +148,53 @@ public class UdpMainMenu extends Application {
         }, "udp-receiver").start();
     }
 
-    private void handleIncoming(String line) {
-        String[] parts = line.split("\\|", 4);
-        if (parts.length < 3) return;
+    private void handleIncoming(String line, int packetLength, int packetNumber) {
+        String[] parts = line.split("\\|", 6);
+        if (parts.length < 1) {
+            return;
+        }
         Platform.runLater(() -> {
             switch (parts[0]) {
-                case "MSG" -> addLine(parts[1] + ": " + decode(parts[2]));
+                case "MSG" -> {
+                    if (parts.length >= 3) {
+                        addSystemLine("UDP nhận datagram #" + packetNumber + " (" + packetLength + " bytes). Không có phiên kết nối cố định.");
+                        addLine(decode(parts[1]) + ": " + decode(parts[2]));
+                    }
+                }
                 case "FILE" -> {
                     String name = UdpFileReceiver.getFileName(line);
                     String payload = UdpFileReceiver.getEncodedData(line);
-                    if (name == null || payload == null) return;
+                    if (name == null || payload == null) {
+                        return;
+                    }
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
+                    addSystemLine("UDP nhận file bằng 1 datagram #" + packetNumber + " (" + packetLength + " bytes).");
+                    if (packetLength > UDP_WARNING_PAYLOAD_BYTES) {
+                        addSystemLine("Cảnh báo: datagram file khá lớn, UDP thực tế kém ổn định hơn TCP cho kiểu dữ liệu này.");
+                    }
                     addLine((image ? "[Ảnh] " : "[File] ") + name);
                     addFileContent(payload, image);
+                }
+                case "QUAD" -> {
+                    if (parts.length >= 5) {
+                        addSystemLine("UDP nhận yêu cầu PT bậc 2 trong datagram #" + packetNumber + " (" + packetLength + " bytes).");
+                        showQuadraticResult(decode(parts[1]), decode(parts[2]), decode(parts[3]), decode(parts[4]));
+                    }
+                }
+                case "QUIZ" -> {
+                    if (parts.length >= 4) {
+                        addSystemLine("UDP nhận câu đố trong datagram #" + packetNumber + " (" + packetLength + " bytes).");
+                        showQuizCard(decode(parts[1]), decode(parts[2]), decode(parts[3]));
+                    }
+                }
+                case "QUIZ_RESULT" -> {
+                    if (parts.length >= 4) {
+                        addSystemLine("UDP nhận phản hồi câu đố trong datagram #" + packetNumber + ".");
+                        addSystemLine(decode(parts[1]) + " trả lời câu đố của bạn: " + decode(parts[2])
+                                + " -> " + decode(parts[3]));
+                    }
+                }
+                default -> {
                 }
             }
         });
@@ -144,9 +202,11 @@ public class UdpMainMenu extends Application {
 
     private void sendMessage() {
         String text = messageField.getText().trim();
-        if (text.isEmpty()) return;
+        if (text.isEmpty()) {
+            return;
+        }
         addLine(nameField.getText().trim() + ": " + text);
-        sendRaw("MSG|" + encode(nameField.getText().trim()) + "|" + encode(text));
+        sendRaw("MSG|" + encode(nameField.getText().trim()) + "|" + encode(text), false, text);
         messageField.clear();
     }
 
@@ -157,19 +217,143 @@ public class UdpMainMenu extends Application {
                 new FileChooser.ExtensionFilter("Text/Images", "*.txt", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp")
         );
         File file = chooser.showOpenDialog(stage);
-        if (file == null) return;
+        if (file == null) {
+            return;
+        }
         try {
             String payload = UdpFileSender.encodeFile(file);
             String name = file.getName();
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
             addLine(nameField.getText().trim() + ": " + (image ? "[Ảnh] " : "[File] ") + name);
-            sendRaw(payload);
+            sendRaw(payload, true, name);
         } catch (Exception ex) {
             showAlert("Không thể gửi file: " + ex.getMessage());
         }
     }
 
-    private void sendRaw(String payload) {
+    private void sendQuadraticProblem() {
+        Optional<String> aInput = askInput("Phương trình bậc 2", "Nhập hệ số a:", "1");
+        if (aInput.isEmpty()) {
+            return;
+        }
+        Optional<String> bInput = askInput("Phương trình bậc 2", "Nhập hệ số b:", "-3");
+        if (bInput.isEmpty()) {
+            return;
+        }
+        Optional<String> cInput = askInput("Phương trình bậc 2", "Nhập hệ số c:", "2");
+        if (cInput.isEmpty()) {
+            return;
+        }
+
+        String a = aInput.get().trim();
+        String b = bInput.get().trim();
+        String c = cInput.get().trim();
+        if (!isDouble(a) || !isDouble(b) || !isDouble(c)) {
+            showAlert("Các hệ số phải là số hợp lệ.");
+            return;
+        }
+
+        addSystemLine("Bạn đã gửi bài toán bậc 2 bằng UDP: " + formatEquation(a, b, c));
+        sendRaw("QUAD|" + encode(nameField.getText().trim()) + "|" + encode(a) + "|" + encode(b) + "|" + encode(c), false,
+                "PT bậc 2");
+    }
+
+    private void showQuadraticResult(String sender, String aText, String bText, String cText) {
+        double a = Double.parseDouble(aText);
+        double b = Double.parseDouble(bText);
+        double c = Double.parseDouble(cText);
+
+        String result;
+        if (a == 0) {
+            if (b == 0) {
+                result = c == 0 ? "Vô số nghiệm" : "Vô nghiệm";
+            } else {
+                result = "Phương trình bậc nhất, nghiệm x = " + formatNumber(-c / b);
+            }
+        } else {
+            double delta = b * b - 4 * a * c;
+            if (delta < 0) {
+                result = "Vô nghiệm";
+            } else if (delta == 0) {
+                result = "Nghiệm kép x = " + formatNumber(-b / (2 * a));
+            } else {
+                double sqrtDelta = Math.sqrt(delta);
+                double x1 = (-b + sqrtDelta) / (2 * a);
+                double x2 = (-b - sqrtDelta) / (2 * a);
+                result = "x1 = " + formatNumber(x1) + ", x2 = " + formatNumber(x2);
+            }
+        }
+
+        addSystemLine(sender + " gửi bài toán qua UDP: " + formatEquation(aText, bText, cText));
+        addSystemLine("Kết quả xử lý từ datagram nhận được: " + result);
+    }
+
+    private void sendQuiz() {
+        Optional<String> hintInput = askInput("Tạo câu đố", "Nhập gợi ý cho câu đố:", "Con vật có vòi dài?");
+        if (hintInput.isEmpty()) {
+            return;
+        }
+        Optional<String> answerInput = askInput("Tạo câu đố", "Nhập đáp án:", "Con voi");
+        if (answerInput.isEmpty()) {
+            return;
+        }
+
+        String hint = hintInput.get().trim();
+        String answer = answerInput.get().trim();
+        if (hint.isEmpty() || answer.isEmpty()) {
+            showAlert("Gợi ý và đáp án không được để trống.");
+            return;
+        }
+
+        addSystemLine("Bạn đã gửi câu đố bằng UDP: " + hint);
+        sendRaw("QUIZ|" + encode(nameField.getText().trim()) + "|" + encode(hint) + "|" + encode(answer), false,
+                "Câu đố");
+    }
+
+    private void showQuizCard(String sender, String hint, String answer) {
+        VBox card = new VBox(8);
+        card.setPadding(new Insets(10));
+        card.setStyle("-fx-background-color: #fff3f0; -fx-border-color: #ff8a65; -fx-border-radius: 6; -fx-background-radius: 6;");
+
+        Label title = new Label(sender + " gửi câu đố UDP:");
+        title.setStyle("-fx-font-weight: bold;");
+        Label hintLabel = new Label("Gợi ý: " + hint);
+        hintLabel.setWrapText(true);
+
+        TextField answerField = new TextField();
+        answerField.setPromptText("Nhập đáp án của bạn");
+        Button submitButton = new Button("Trả lời");
+        Label resultLabel = new Label();
+
+        submitButton.setOnAction(e -> {
+            String guess = answerField.getText().trim();
+            if (guess.isEmpty()) {
+                resultLabel.setText("Bạn chưa nhập đáp án.");
+                return;
+            }
+            boolean correct = guess.equalsIgnoreCase(answer.trim());
+            String result = correct ? "Đúng rồi" : "Sai rồi";
+            resultLabel.setText(result + ". Đáp án: " + answer);
+            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim()) + "|" + encode(guess) + "|" + encode(result), false,
+                    "Kết quả câu đố");
+            submitButton.setDisable(true);
+        });
+
+        HBox actionRow = new HBox(8, answerField, submitButton);
+        HBox.setHgrow(answerField, Priority.ALWAYS);
+        card.getChildren().addAll(title, hintLabel, actionRow, resultLabel);
+        messageBox.getChildren().add(card);
+    }
+
+    private Optional<String> askInput(String title, String header, String defaultValue) {
+        TextInputDialog dialog = new TextInputDialog(defaultValue);
+        dialog.setTitle(title);
+        dialog.setHeaderText(header);
+        dialog.setContentText("Giá trị:");
+        return dialog.showAndWait();
+    }
+
+    private void sendRaw(String payload, boolean isFile, String preview) {
         int peerPort;
         try {
             peerPort = Integer.parseInt(peerPortField.getText().trim());
@@ -179,8 +363,18 @@ public class UdpMainMenu extends Application {
         }
         try {
             byte[] data = payload.getBytes(StandardCharsets.UTF_8);
-            if (socket == null) socket = new java.net.DatagramSocket();
+            outgoingPacketCounter++;
+            int packetNumber = outgoingPacketCounter;
+
+            if (socket == null || socket.isClosed()) {
+                socket = new java.net.DatagramSocket();
+            }
             socket.send(new java.net.DatagramPacket(data, data.length, java.net.InetAddress.getByName("127.0.0.1"), peerPort));
+
+            addSystemLine("UDP đã gửi datagram #" + packetNumber + " (" + data.length + " bytes): " + preview);
+            if (isFile && data.length > UDP_WARNING_PAYLOAD_BYTES) {
+                addSystemLine("Lưu ý: file này đang đi trong 1 datagram lớn, nên về bản chất UDP kém phù hợp hơn TCP cho truyền file lớn.");
+            }
         } catch (Exception e) {
             showAlert("Không gửi được qua UDP: " + e.getMessage());
         }
@@ -190,6 +384,13 @@ public class UdpMainMenu extends Application {
         Label label = new Label(text);
         label.setWrapText(true);
         label.setStyle("-fx-padding: 2 0 2 0; -fx-text-fill: black;");
+        messageBox.getChildren().add(label);
+    }
+
+    private void addSystemLine(String text) {
+        Label label = new Label("[UDP Demo] " + text);
+        label.setWrapText(true);
+        label.setStyle("-fx-padding: 4 0 4 0; -fx-text-fill: #b22222; -fx-font-style: italic;");
         messageBox.getChildren().add(label);
     }
 
@@ -222,6 +423,26 @@ public class UdpMainMenu extends Application {
 
     private String decode(String base64) {
         return new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+    }
+
+    private boolean isDouble(String value) {
+        try {
+            Double.parseDouble(value);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String formatEquation(String a, String b, String c) {
+        return a + "x² + " + b + "x + " + c + " = 0";
+    }
+
+    private String formatNumber(double value) {
+        if (value == (long) value) {
+            return String.valueOf((long) value);
+        }
+        return String.format("%.2f", value);
     }
 
     private void showAlert(String msg) {
