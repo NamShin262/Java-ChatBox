@@ -35,8 +35,6 @@ public class UdpMainMenu extends Application {
         launch(args);
     }
 
-    private static final int UDP_WARNING_PAYLOAD_BYTES = 60_000;
-
     private final int startPort = 6000;
     private final int endPort = 6010;
     private int localPort = startPort;
@@ -46,11 +44,8 @@ public class UdpMainMenu extends Application {
     private TextField peerPortField;
     private TextField messageField;
     private Label statusLabel;
-    private Label demoInfoLabel;
     private Stage stage;
     private java.net.DatagramSocket socket;
-    private int outgoingPacketCounter = 0;
-    private int incomingPacketCounter = 0;
 
     @Override
     public void start(Stage primaryStage) {
@@ -58,14 +53,12 @@ public class UdpMainMenu extends Application {
         localPort = findFreePort();
 
         nameField = new TextField("User");
-        peerPortField = new TextField(String.valueOf(localPort == startPort ? startPort + 1 : startPort));
+        peerPortField = new TextField();
+        peerPortField.setPromptText("Nhập peer port");
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
 
         statusLabel = new Label("UDP local port: " + localPort + " | Connectionless datagram mode");
-        demoInfoLabel = new Label(
-                "UDP demo: mỗi lần gửi là 1 datagram độc lập; ứng dụng vẫn hoạt động đầy đủ, nhưng dữ liệu lớn có thể không phù hợp bằng TCP.");
-        demoInfoLabel.setStyle("-fx-text-fill: #b22222; -fx-font-weight: bold;");
 
         messageBox = new VBox(8);
         messageBox.setPadding(new Insets(10));
@@ -93,7 +86,7 @@ public class UdpMainMenu extends Application {
         top.setAlignment(Pos.CENTER_LEFT);
         top.setPadding(new Insets(10));
 
-        VBox topContainer = new VBox(8, top, demoInfoLabel);
+        VBox topContainer = new VBox(8, top);
         topContainer.setPadding(new Insets(0, 0, 10, 0));
 
         HBox bottom = new HBox(10, messageField, sendButton, fileButton, quadraticButton, quizButton);
@@ -110,7 +103,6 @@ public class UdpMainMenu extends Application {
         primaryStage.setScene(new Scene(root, 1040, 640));
         primaryStage.show();
 
-        addSystemLine("UDP đang chạy ở chế độ datagram: không tạo kết nối, gửi từng gói độc lập.");
         startReceiver();
     }
 
@@ -138,9 +130,8 @@ public class UdpMainMenu extends Application {
                 while (true) {
                     java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length);
                     socket.receive(packet);
-                    incomingPacketCounter++;
                     String line = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
-                    handleIncoming(line, packet.getLength(), incomingPacketCounter);
+                    handleIncoming(line);
                 }
             } catch (Exception e) {
                 Platform.runLater(() -> showAlert("Lỗi UDP receiver: " + e.getMessage()));
@@ -148,7 +139,7 @@ public class UdpMainMenu extends Application {
         }, "udp-receiver").start();
     }
 
-    private void handleIncoming(String line, int packetLength, int packetNumber) {
+    private void handleIncoming(String line) {
         String[] parts = line.split("\\|", 6);
         if (parts.length < 1) {
             return;
@@ -157,7 +148,6 @@ public class UdpMainMenu extends Application {
             switch (parts[0]) {
                 case "MSG" -> {
                     if (parts.length >= 3) {
-                        addSystemLine("UDP nhận datagram #" + packetNumber + " (" + packetLength + " bytes). Không có phiên kết nối cố định.");
                         addLine(decode(parts[1]) + ": " + decode(parts[2]));
                     }
                 }
@@ -168,28 +158,21 @@ public class UdpMainMenu extends Application {
                         return;
                     }
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-                    addSystemLine("UDP nhận file bằng 1 datagram #" + packetNumber + " (" + packetLength + " bytes).");
-                    if (packetLength > UDP_WARNING_PAYLOAD_BYTES) {
-                        addSystemLine("Cảnh báo: datagram file khá lớn, UDP thực tế kém ổn định hơn TCP cho kiểu dữ liệu này.");
-                    }
                     addLine((image ? "[Ảnh] " : "[File] ") + name);
                     addFileContent(payload, image);
                 }
                 case "QUAD" -> {
                     if (parts.length >= 5) {
-                        addSystemLine("UDP nhận yêu cầu PT bậc 2 trong datagram #" + packetNumber + " (" + packetLength + " bytes).");
                         showQuadraticResult(decode(parts[1]), decode(parts[2]), decode(parts[3]), decode(parts[4]));
                     }
                 }
                 case "QUIZ" -> {
                     if (parts.length >= 4) {
-                        addSystemLine("UDP nhận câu đố trong datagram #" + packetNumber + " (" + packetLength + " bytes).");
                         showQuizCard(decode(parts[1]), decode(parts[2]), decode(parts[3]));
                     }
                 }
                 case "QUIZ_RESULT" -> {
                     if (parts.length >= 4) {
-                        addSystemLine("UDP nhận phản hồi câu đố trong datagram #" + packetNumber + ".");
                         addSystemLine(decode(parts[1]) + " trả lời câu đố của bạn: " + decode(parts[2])
                                 + " -> " + decode(parts[3]));
                     }
@@ -206,7 +189,7 @@ public class UdpMainMenu extends Application {
             return;
         }
         addLine(nameField.getText().trim() + ": " + text);
-        sendRaw("MSG|" + encode(nameField.getText().trim()) + "|" + encode(text), false, text);
+        sendRaw("MSG|" + encode(nameField.getText().trim()) + "|" + encode(text));
         messageField.clear();
     }
 
@@ -223,9 +206,13 @@ public class UdpMainMenu extends Application {
         try {
             String payload = UdpFileSender.encodeFile(file);
             String name = file.getName();
+            String encodedBytes = UdpFileReceiver.getEncodedData(payload);
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
             addLine(nameField.getText().trim() + ": " + (image ? "[Ảnh] " : "[File] ") + name);
-            sendRaw(payload, true, name);
+            if (encodedBytes != null) {
+                addFileContent(encodedBytes, image);
+            }
+            sendRaw(payload);
         } catch (Exception ex) {
             showAlert("Không thể gửi file: " + ex.getMessage());
         }
@@ -254,8 +241,7 @@ public class UdpMainMenu extends Application {
         }
 
         addSystemLine("Bạn đã gửi bài toán bậc 2 bằng UDP: " + formatEquation(a, b, c));
-        sendRaw("QUAD|" + encode(nameField.getText().trim()) + "|" + encode(a) + "|" + encode(b) + "|" + encode(c), false,
-                "PT bậc 2");
+        sendRaw("QUAD|" + encode(nameField.getText().trim()) + "|" + encode(a) + "|" + encode(b) + "|" + encode(c));
     }
 
     private void showQuadraticResult(String sender, String aText, String bText, String cText) {
@@ -306,8 +292,7 @@ public class UdpMainMenu extends Application {
         }
 
         addSystemLine("Bạn đã gửi câu đố bằng UDP: " + hint);
-        sendRaw("QUIZ|" + encode(nameField.getText().trim()) + "|" + encode(hint) + "|" + encode(answer), false,
-                "Câu đố");
+        sendRaw("QUIZ|" + encode(nameField.getText().trim()) + "|" + encode(hint) + "|" + encode(answer));
     }
 
     private void showQuizCard(String sender, String hint, String answer) {
@@ -334,8 +319,7 @@ public class UdpMainMenu extends Application {
             boolean correct = guess.equalsIgnoreCase(answer.trim());
             String result = correct ? "Đúng rồi" : "Sai rồi";
             resultLabel.setText(result + ". Đáp án: " + answer);
-            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim()) + "|" + encode(guess) + "|" + encode(result), false,
-                    "Kết quả câu đố");
+            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim()) + "|" + encode(guess) + "|" + encode(result));
             submitButton.setDisable(true);
         });
 
@@ -353,7 +337,7 @@ public class UdpMainMenu extends Application {
         return dialog.showAndWait();
     }
 
-    private void sendRaw(String payload, boolean isFile, String preview) {
+    private void sendRaw(String payload) {
         int peerPort;
         try {
             peerPort = Integer.parseInt(peerPortField.getText().trim());
@@ -363,18 +347,10 @@ public class UdpMainMenu extends Application {
         }
         try {
             byte[] data = payload.getBytes(StandardCharsets.UTF_8);
-            outgoingPacketCounter++;
-            int packetNumber = outgoingPacketCounter;
-
             if (socket == null || socket.isClosed()) {
                 socket = new java.net.DatagramSocket();
             }
             socket.send(new java.net.DatagramPacket(data, data.length, java.net.InetAddress.getByName("127.0.0.1"), peerPort));
-
-            addSystemLine("UDP đã gửi datagram #" + packetNumber + " (" + data.length + " bytes): " + preview);
-            if (isFile && data.length > UDP_WARNING_PAYLOAD_BYTES) {
-                addSystemLine("Lưu ý: file này đang đi trong 1 datagram lớn, nên về bản chất UDP kém phù hợp hơn TCP cho truyền file lớn.");
-            }
         } catch (Exception e) {
             showAlert("Không gửi được qua UDP: " + e.getMessage());
         }
@@ -388,7 +364,7 @@ public class UdpMainMenu extends Application {
     }
 
     private void addSystemLine(String text) {
-        Label label = new Label("[UDP Demo] " + text);
+        Label label = new Label(text);
         label.setWrapText(true);
         label.setStyle("-fx-padding: 4 0 4 0; -fx-text-fill: #b22222; -fx-font-style: italic;");
         messageBox.getChildren().add(label);

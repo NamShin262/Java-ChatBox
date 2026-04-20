@@ -57,7 +57,8 @@ public class TcpMainMenu extends Application {
         localPort = findFreePort();
 
         nameField = new TextField("User");
-        peerPortField = new TextField(String.valueOf(localPort == startPort ? startPort + 1 : startPort));
+        peerPortField = new TextField();
+        peerPortField.setPromptText("Nhập peer port");
         messageField = new TextField();
         messageField.setPromptText("Nhập tin nhắn...");
 
@@ -102,7 +103,6 @@ public class TcpMainMenu extends Application {
         primaryStage.setScene(new Scene(root, 980, 620));
         primaryStage.show();
 
-        addSystemLine("TCP demo: chat, gửi file, giải phương trình bậc 2 và trò chơi đố chữ.");
         startReceiver();
     }
 
@@ -368,7 +368,7 @@ public class TcpMainMenu extends Application {
     }
 
     private void addSystemLine(String text) {
-        Label label = new Label("[TCP App] " + text);
+        Label label = new Label(text);
         label.setWrapText(true);
         label.setStyle("-fx-padding: 4 0 4 0; -fx-text-fill: #006400; -fx-font-style: italic;");
         messageBox.getChildren().add(label);
