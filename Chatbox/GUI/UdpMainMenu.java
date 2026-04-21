@@ -14,6 +14,7 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -25,6 +26,7 @@ import javafx.stage.Stage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.Random;
@@ -176,10 +178,7 @@ public class UdpMainMenu extends Application {
                         return;
                     }
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-                    if (!image) {
-                        addLine("[File] " + name, false);
-                    }
-                    addFileContent(payload, image);
+                    addFileContent(name, payload, image, false);
                 }
                 case "QUAD" -> {
                     if (parts.length >= 5) {
@@ -242,11 +241,8 @@ public class UdpMainMenu extends Application {
             String name = file.getName();
             String encodedBytes = UdpFileReceiver.getEncodedData(payload);
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-            if (!image) {
-                addLine(nameField.getText().trim() + ": [File] " + name, true);
-            }
             if (encodedBytes != null) {
-                addFileContent(encodedBytes, image);
+                addFileContent(name, encodedBytes, image, true);
             }
             sendRaw(payload);
         } catch (Exception ex) {
@@ -587,26 +583,105 @@ public class UdpMainMenu extends Application {
         messageBox.getChildren().add(label);
     }
 
-    private void addFileContent(String encodedBytes, boolean image) {
+    private void addFileContent(String fileName, String encodedBytes, boolean image, boolean ownMessage) {
         try {
+            byte[] bytes = Base64.getDecoder().decode(encodedBytes);
             if (image) {
-                byte[] bytes = Base64.getDecoder().decode(encodedBytes);
                 ImageView iv = new ImageView(new Image(new ByteArrayInputStream(bytes)));
                 iv.setFitWidth(220);
                 iv.setPreserveRatio(true);
-                messageBox.getChildren().add(iv);
+                iv.setStyle("-fx-cursor: hand;");
+                iv.setOnMouseClicked(event -> {
+                    if (event.getButton() == MouseButton.PRIMARY) {
+                        openImageViewer(fileName, bytes);
+                    }
+                });
+
+                Button saveButton = new Button("Lưu ảnh");
+                saveButton.setOnAction(e -> saveBytesToFile(fileName, bytes));
+                Label hintLabel = new Label("Nhấp vào ảnh để xem lớn");
+                hintLabel.setStyle("-fx-font-size: 11; -fx-text-fill: #666666;");
+
+                VBox content = new VBox(6, iv, new HBox(8, saveButton), hintLabel);
+                addContentBubble(content, ownMessage);
             } else {
-                byte[] bytes = Base64.getDecoder().decode(encodedBytes);
-                String text = new String(bytes, StandardCharsets.UTF_8);
-                TextArea ta = new TextArea(text);
-                ta.setEditable(false);
-                ta.setWrapText(true);
-                ta.setPrefRowCount(4);
-                ta.setPrefWidth(320);
-                messageBox.getChildren().add(ta);
+                Label fileLabel = new Label(fileName);
+                fileLabel.setStyle("-fx-font-weight: bold;");
+                Label subLabel = new Label("Tệp văn bản - nhấn Xem để mở hoặc Lưu để tải về");
+                subLabel.setStyle("-fx-text-fill: #666666;");
+
+                Button viewButton = new Button("Xem");
+                viewButton.setOnAction(e -> openTextViewer(fileName, bytes));
+                Button saveButton = new Button("Lưu");
+                saveButton.setOnAction(e -> saveBytesToFile(fileName, bytes));
+
+                VBox content = new VBox(6, fileLabel, subLabel, new HBox(8, viewButton, saveButton));
+                addContentBubble(content, ownMessage);
             }
         } catch (Exception ex) {
-            messageBox.getChildren().add(new Label("[Không mở được nội dung]"));
+            addLine("[Không mở được nội dung]", ownMessage);
+        }
+    }
+
+    private void addContentBubble(javafx.scene.Node content, boolean ownMessage) {
+        VBox bubble = new VBox(content);
+        bubble.setMaxWidth(440);
+        bubble.setStyle(ownMessage
+                ? "-fx-padding: 8 12 8 12; -fx-background-color: #d9fdd3; -fx-background-radius: 14;"
+                : "-fx-padding: 8 12 8 12; -fx-background-color: #f1f0f0; -fx-background-radius: 14;");
+
+        HBox wrapper = new HBox(bubble);
+        wrapper.setAlignment(ownMessage ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+        wrapper.setPadding(new Insets(2, 0, 2, 0));
+        messageBox.getChildren().add(wrapper);
+    }
+
+    private void openImageViewer(String fileName, byte[] bytes) {
+        Stage imageStage = new Stage();
+        imageStage.setTitle(fileName);
+
+        ImageView imageView = new ImageView(new Image(new ByteArrayInputStream(bytes)));
+        imageView.setPreserveRatio(true);
+        imageView.setFitWidth(900);
+        imageView.setFitHeight(700);
+
+        ScrollPane pane = new ScrollPane(imageView);
+        pane.setFitToWidth(true);
+        pane.setFitToHeight(true);
+
+        BorderPane root = new BorderPane(pane);
+        root.setPadding(new Insets(10));
+        imageStage.setScene(new Scene(root, 950, 750));
+        imageStage.show();
+    }
+
+    private void openTextViewer(String fileName, byte[] bytes) {
+        Stage textStage = new Stage();
+        textStage.setTitle(fileName);
+
+        TextArea textArea = new TextArea(new String(bytes, StandardCharsets.UTF_8));
+        textArea.setEditable(false);
+        textArea.setWrapText(true);
+
+        BorderPane root = new BorderPane(textArea);
+        root.setPadding(new Insets(10));
+        textStage.setScene(new Scene(root, 700, 500));
+        textStage.show();
+    }
+
+    private void saveBytesToFile(String defaultFileName, byte[] bytes) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Lưu tệp");
+        chooser.setInitialFileName(defaultFileName);
+        File file = chooser.showSaveDialog(stage);
+        if (file == null) {
+            return;
+        }
+        try {
+            Files.write(file.toPath(), bytes);
+            showAlert("Đã lưu tệp: " + file.getAbsolutePath());
+        } catch (Exception ex) {
+            showAlert("Không thể lưu tệp: " + ex.getMessage());
         }
     }
 
