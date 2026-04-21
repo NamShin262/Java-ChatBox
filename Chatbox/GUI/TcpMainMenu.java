@@ -40,10 +40,6 @@ import Chatbox.network.TcpFileReceiver;
 import Chatbox.network.TcpFileSender;
 
 public class TcpMainMenu extends Application {
-    public static void main(String[] args) {
-        launch(args);
-    }
-
     private static final int CARO_SIZE = 3;
 
     private final int startPort = 7000;

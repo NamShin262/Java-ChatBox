@@ -3,25 +3,17 @@
   "configurations": [
     {
       "type": "java",
-      "name": "TcpMainMenu",
+      "name": "ChatboxLauncher",
       "request": "launch",
-      "mainClass": "Chatbox.GUI.TcpMainMenu",
-      "projectName": "CK"
+      "mainClass": "Chatbox.GUI.ChatboxLauncher",
+      "projectName": "CK_2093a36c"
     },
     {
       "type": "java",
-      "name": "Run TCP",
+      "name": "Chatbox Launcher",
       "request": "launch",
-      "mainClass": "Chatbox.GUI.TcpMainMenu",
-      "projectName": "CK_bbefa94d",
-      "vmArgs": "--module-path \"C:\\Users\\ASUS\\Downloads\\openjfx-21.0.10_windows-x64_bin-sdk\\javafx-sdk-21.0.10\\lib\" --add-modules javafx.controls,javafx.fxml"
-    },
-    {
-      "type": "java",
-      "name": "Run UDP",
-      "request": "launch",
-      "mainClass": "Chatbox.GUI.UdpMainMenu",
-      "projectName": "CK_bbefa94d",
+      "mainClass": "Chatbox.GUI.ChatboxLauncher",
+      "projectName": "CK",
       "vmArgs": "--module-path \"C:\\Users\\ASUS\\Downloads\\openjfx-21.0.10_windows-x64_bin-sdk\\javafx-sdk-21.0.10\\lib\" --add-modules javafx.controls,javafx.fxml"
     }
   ]

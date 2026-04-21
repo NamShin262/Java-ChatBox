@@ -35,10 +35,6 @@ import Chatbox.network.UdpFileReceiver;
 import Chatbox.network.UdpFileSender;
 
 public class UdpMainMenu extends Application {
-    public static void main(String[] args) {
-        launch(args);
-    }
-
     private static final int CARO_SIZE = 3;
 
     private final int startPort = 6000;
