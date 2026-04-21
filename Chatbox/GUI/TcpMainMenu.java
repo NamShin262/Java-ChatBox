@@ -8,10 +8,12 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
@@ -176,14 +178,22 @@ public class TcpMainMenu extends Application {
                     }
                 }
                 case "QUIZ" -> {
-                    if (parts.length >= 4) {
-                        showQuizCard(decode(parts[1]), decode(parts[2]), decode(parts[3]));
+                    if (parts.length >= 8) {
+                        showQuizCard(
+                                decode(parts[1]),
+                                decode(parts[2]),
+                                decode(parts[3]),
+                                decode(parts[4]),
+                                decode(parts[5]),
+                                decode(parts[6]),
+                                decode(parts[7])
+                        );
                     }
                 }
                 case "QUIZ_RESULT" -> {
-                    if (parts.length >= 4) {
-                        addSystemLine(decode(parts[1]) + " trả lời câu đố của bạn: " + decode(parts[2])
-                                + " -> " + decode(parts[3]));
+                    if (parts.length >= 5) {
+                        addSystemLine(decode(parts[1]) + " trả lời câu đố của bạn: chọn " + decode(parts[2])
+                                + " -> " + decode(parts[3]) + " (Đáp án đúng: " + decode(parts[4]) + ")");
                     }
                 }
                 default -> {
@@ -282,57 +292,106 @@ public class TcpMainMenu extends Application {
     }
 
     private void sendQuiz() {
-        Optional<String> hintInput = askInput("Tạo câu đố", "Nhập gợi ý cho câu đố:", "Tên thủ đô của Việt Nam?");
-        if (hintInput.isEmpty()) {
+        Optional<String> questionInput = askInput("Tạo câu đố", "Nhập nội dung câu hỏi:", "Thủ đô của Việt Nam là gì?");
+        if (questionInput.isEmpty()) {
             return;
         }
-        Optional<String> answerInput = askInput("Tạo câu đố", "Nhập đáp án:", "Hà Nội");
-        if (answerInput.isEmpty()) {
+        Optional<String> optionAInput = askInput("Tạo câu đố", "Nhập đáp án A:", "Hà Nội");
+        if (optionAInput.isEmpty()) {
+            return;
+        }
+        Optional<String> optionBInput = askInput("Tạo câu đố", "Nhập đáp án B:", "Đà Nẵng");
+        if (optionBInput.isEmpty()) {
+            return;
+        }
+        Optional<String> optionCInput = askInput("Tạo câu đố", "Nhập đáp án C:", "Hải Phòng");
+        if (optionCInput.isEmpty()) {
+            return;
+        }
+        Optional<String> optionDInput = askInput("Tạo câu đố", "Nhập đáp án D:", "TP. Hồ Chí Minh");
+        if (optionDInput.isEmpty()) {
+            return;
+        }
+        Optional<String> correctInput = askInput("Tạo câu đố", "Đáp án đúng là A, B, C hay D?", "A");
+        if (correctInput.isEmpty()) {
             return;
         }
 
-        String hint = hintInput.get().trim();
-        String answer = answerInput.get().trim();
-        if (hint.isEmpty() || answer.isEmpty()) {
-            showAlert("Gợi ý và đáp án không được để trống.");
+        String question = questionInput.get().trim();
+        String optionA = optionAInput.get().trim();
+        String optionB = optionBInput.get().trim();
+        String optionC = optionCInput.get().trim();
+        String optionD = optionDInput.get().trim();
+        String correctOption = correctInput.get().trim().toUpperCase();
+
+        if (question.isEmpty() || optionA.isEmpty() || optionB.isEmpty() || optionC.isEmpty() || optionD.isEmpty()) {
+            showAlert("Câu hỏi và các đáp án A/B/C/D không được để trống.");
+            return;
+        }
+        if (!(correctOption.equals("A") || correctOption.equals("B") || correctOption.equals("C") || correctOption.equals("D"))) {
+            showAlert("Đáp án đúng phải là một trong các lựa chọn: A, B, C, D.");
             return;
         }
 
-        addSystemLine("Bạn đã gửi câu đố: " + hint);
-        sendRaw("QUIZ|" + encode(nameField.getText().trim()) + "|" + encode(hint) + "|" + encode(answer));
+        addSystemLine("Bạn đã gửi câu đố: " + question + " (Đáp án đúng: " + correctOption + ")");
+        sendRaw("QUIZ|" + encode(nameField.getText().trim())
+                + "|" + encode(question)
+                + "|" + encode(optionA)
+                + "|" + encode(optionB)
+                + "|" + encode(optionC)
+                + "|" + encode(optionD)
+                + "|" + encode(correctOption));
     }
 
-    private void showQuizCard(String sender, String hint, String answer) {
+    private void showQuizCard(String sender, String question, String optionA, String optionB, String optionC,
+                              String optionD, String correctOption) {
         VBox card = new VBox(8);
         card.setPadding(new Insets(10));
         card.setStyle("-fx-background-color: #eef6ff; -fx-border-color: #6aa9ff; -fx-border-radius: 6; -fx-background-radius: 6;");
 
         Label title = new Label(sender + " gửi câu đố:");
         title.setStyle("-fx-font-weight: bold;");
-        Label hintLabel = new Label("Gợi ý: " + hint);
-        hintLabel.setWrapText(true);
+        Label questionLabel = new Label("Câu hỏi: " + question);
+        questionLabel.setWrapText(true);
 
-        TextField answerField = new TextField();
-        answerField.setPromptText("Nhập đáp án của bạn");
-        Button submitButton = new Button("Trả lời");
+        ToggleGroup toggleGroup = new ToggleGroup();
+        RadioButton optionARadio = new RadioButton("A. " + optionA);
+        optionARadio.setToggleGroup(toggleGroup);
+        RadioButton optionBRadio = new RadioButton("B. " + optionB);
+        optionBRadio.setToggleGroup(toggleGroup);
+        RadioButton optionCRadio = new RadioButton("C. " + optionC);
+        optionCRadio.setToggleGroup(toggleGroup);
+        RadioButton optionDRadio = new RadioButton("D. " + optionD);
+        optionDRadio.setToggleGroup(toggleGroup);
+
+        Button submitButton = new Button("Chọn đáp án");
         Label resultLabel = new Label();
 
         submitButton.setOnAction(e -> {
-            String guess = answerField.getText().trim();
-            if (guess.isEmpty()) {
-                resultLabel.setText("Bạn chưa nhập đáp án.");
+            RadioButton selected = (RadioButton) toggleGroup.getSelectedToggle();
+            if (selected == null) {
+                resultLabel.setText("Bạn chưa chọn đáp án.");
                 return;
             }
-            boolean correct = guess.equalsIgnoreCase(answer.trim());
+
+            String selectedOption = selected.getText().substring(0, 1);
+            boolean correct = selectedOption.equalsIgnoreCase(correctOption.trim());
             String result = correct ? "Đúng rồi" : "Sai rồi";
-            resultLabel.setText(result + ". Đáp án: " + answer);
-            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim()) + "|" + encode(guess) + "|" + encode(result));
+            resultLabel.setText(result + ". Đáp án đúng là " + correctOption + ".");
+            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim())
+                    + "|" + encode(selectedOption)
+                    + "|" + encode(result)
+                    + "|" + encode(correctOption));
+
             submitButton.setDisable(true);
+            optionARadio.setDisable(true);
+            optionBRadio.setDisable(true);
+            optionCRadio.setDisable(true);
+            optionDRadio.setDisable(true);
         });
 
-        HBox actionRow = new HBox(8, answerField, submitButton);
-        HBox.setHgrow(answerField, Priority.ALWAYS);
-        card.getChildren().addAll(title, hintLabel, actionRow, resultLabel);
+        VBox optionsBox = new VBox(6, optionARadio, optionBRadio, optionCRadio, optionDRadio);
+        card.getChildren().addAll(title, questionLabel, optionsBox, submitButton, resultLabel);
         messageBox.getChildren().add(card);
     }
 
