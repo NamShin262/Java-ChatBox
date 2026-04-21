@@ -8,15 +8,14 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
-import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
@@ -28,6 +27,7 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.Random;
 
 import Chatbox.network.UdpFileReceiver;
 import Chatbox.network.UdpFileSender;
@@ -36,6 +36,8 @@ public class UdpMainMenu extends Application {
     public static void main(String[] args) {
         launch(args);
     }
+
+    private static final int CARO_SIZE = 3;
 
     private final int startPort = 6000;
     private final int endPort = 6010;
@@ -48,6 +50,17 @@ public class UdpMainMenu extends Application {
     private Label statusLabel;
     private Stage stage;
     private java.net.DatagramSocket socket;
+    private final Random random = new Random();
+    private long reactionStartTime = -1;
+    private boolean reactionReady = false;
+
+    private String[][] caroBoard;
+    private Button[][] caroButtons;
+    private Label caroStatusLabel;
+    private String caroMySymbol;
+    private String caroOpponentSymbol;
+    private boolean caroMyTurn;
+    private boolean caroGameActive;
 
     @Override
     public void start(Stage primaryStage) {
@@ -78,8 +91,11 @@ public class UdpMainMenu extends Application {
         Button quadraticButton = new Button("PT bậc 2");
         quadraticButton.setOnAction(e -> sendQuadraticProblem());
 
-        Button quizButton = new Button("Tạo câu đố");
-        quizButton.setOnAction(e -> sendQuiz());
+        Button caroButton = new Button("Caro chung");
+        caroButton.setOnAction(e -> sendCaroInvite());
+
+        Button reactionButton = new Button("Game phản xạ UDP");
+        reactionButton.setOnAction(e -> sendReactionInvite());
 
         HBox top = new HBox(10,
                 new Label("Tên:"), nameField,
@@ -91,7 +107,7 @@ public class UdpMainMenu extends Application {
         VBox topContainer = new VBox(8, top);
         topContainer.setPadding(new Insets(0, 0, 10, 0));
 
-        HBox bottom = new HBox(10, messageField, sendButton, fileButton, quadraticButton, quizButton);
+        HBox bottom = new HBox(10, messageField, sendButton, fileButton, quadraticButton, caroButton, reactionButton);
         HBox.setHgrow(messageField, Priority.ALWAYS);
         bottom.setPadding(new Insets(10));
 
@@ -142,7 +158,7 @@ public class UdpMainMenu extends Application {
     }
 
     private void handleIncoming(String line) {
-        String[] parts = line.split("\\|", 6);
+        String[] parts = line.split("\\|");
         if (parts.length < 1) {
             return;
         }
@@ -150,7 +166,7 @@ public class UdpMainMenu extends Application {
             switch (parts[0]) {
                 case "MSG" -> {
                     if (parts.length >= 3) {
-                        addLine(decode(parts[1]) + ": " + decode(parts[2]));
+                        addLine(decode(parts[1]) + ": " + decode(parts[2]), false);
                     }
                 }
                 case "FILE" -> {
@@ -160,7 +176,9 @@ public class UdpMainMenu extends Application {
                         return;
                     }
                     boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-                    addLine((image ? "[Ảnh] " : "[File] ") + name);
+                    if (!image) {
+                        addLine("[File] " + name, false);
+                    }
                     addFileContent(payload, image);
                 }
                 case "QUAD" -> {
@@ -168,23 +186,29 @@ public class UdpMainMenu extends Application {
                         showQuadraticResult(decode(parts[1]), decode(parts[2]), decode(parts[3]), decode(parts[4]));
                     }
                 }
-                case "QUIZ" -> {
-                    if (parts.length >= 8) {
-                        showQuizCard(
-                                decode(parts[1]),
-                                decode(parts[2]),
-                                decode(parts[3]),
-                                decode(parts[4]),
-                                decode(parts[5]),
-                                decode(parts[6]),
-                                decode(parts[7])
-                        );
+                case "CARO_INVITE" -> {
+                    if (parts.length >= 2) {
+                        startCaroGame(decode(parts[1]), false);
                     }
                 }
-                case "QUIZ_RESULT" -> {
-                    if (parts.length >= 5) {
-                        addSystemLine(decode(parts[1]) + " trả lời câu đố của bạn: chọn " + decode(parts[2])
-                                + " -> " + decode(parts[3]) + " (Đáp án đúng: " + decode(parts[4]) + ")");
+                case "CARO_MOVE" -> {
+                    if (parts.length >= 4) {
+                        applyOpponentMove(decode(parts[1]), Integer.parseInt(decode(parts[2])), Integer.parseInt(decode(parts[3])));
+                    }
+                }
+                case "CARO_RESULT" -> {
+                    if (parts.length >= 3) {
+                        addSystemLine("Caro UDP: " + decode(parts[1]) + " -> " + decode(parts[2]));
+                    }
+                }
+                case "REACTION_INVITE" -> {
+                    if (parts.length >= 2) {
+                        showReactionCard(decode(parts[1]));
+                    }
+                }
+                case "REACTION_RESULT" -> {
+                    if (parts.length >= 3) {
+                        addSystemLine(decode(parts[1]) + " phản hồi sau " + decode(parts[2]) + " ms trong game phản xạ UDP.");
                     }
                 }
                 default -> {
@@ -198,7 +222,7 @@ public class UdpMainMenu extends Application {
         if (text.isEmpty()) {
             return;
         }
-        addLine(nameField.getText().trim() + ": " + text);
+        addLine(nameField.getText().trim() + ": " + text, true);
         sendRaw("MSG|" + encode(nameField.getText().trim()) + "|" + encode(text));
         messageField.clear();
     }
@@ -218,7 +242,9 @@ public class UdpMainMenu extends Application {
             String name = file.getName();
             String encodedBytes = UdpFileReceiver.getEncodedData(payload);
             boolean image = name.toLowerCase().matches(".*\\.(png|jpg|jpeg|gif|webp)$");
-            addLine(nameField.getText().trim() + ": " + (image ? "[Ảnh] " : "[File] ") + name);
+            if (!image) {
+                addLine(nameField.getText().trim() + ": [File] " + name, true);
+            }
             if (encodedBytes != null) {
                 addFileContent(encodedBytes, image);
             }
@@ -284,107 +310,231 @@ public class UdpMainMenu extends Application {
         addSystemLine("Kết quả xử lý từ datagram nhận được: " + result);
     }
 
-    private void sendQuiz() {
-        Optional<String> questionInput = askInput("Tạo câu đố", "Nhập nội dung câu hỏi:", "Con vật nào có vòi dài?");
-        if (questionInput.isEmpty()) {
-            return;
-        }
-        Optional<String> optionAInput = askInput("Tạo câu đố", "Nhập đáp án A:", "Con voi");
-        if (optionAInput.isEmpty()) {
-            return;
-        }
-        Optional<String> optionBInput = askInput("Tạo câu đố", "Nhập đáp án B:", "Con mèo");
-        if (optionBInput.isEmpty()) {
-            return;
-        }
-        Optional<String> optionCInput = askInput("Tạo câu đố", "Nhập đáp án C:", "Con chó");
-        if (optionCInput.isEmpty()) {
-            return;
-        }
-        Optional<String> optionDInput = askInput("Tạo câu đố", "Nhập đáp án D:", "Con cá");
-        if (optionDInput.isEmpty()) {
-            return;
-        }
-        Optional<String> correctInput = askInput("Tạo câu đố", "Đáp án đúng là A, B, C hay D?", "A");
-        if (correctInput.isEmpty()) {
-            return;
-        }
-
-        String question = questionInput.get().trim();
-        String optionA = optionAInput.get().trim();
-        String optionB = optionBInput.get().trim();
-        String optionC = optionCInput.get().trim();
-        String optionD = optionDInput.get().trim();
-        String correctOption = correctInput.get().trim().toUpperCase();
-
-        if (question.isEmpty() || optionA.isEmpty() || optionB.isEmpty() || optionC.isEmpty() || optionD.isEmpty()) {
-            showAlert("Câu hỏi và các đáp án A/B/C/D không được để trống.");
-            return;
-        }
-        if (!(correctOption.equals("A") || correctOption.equals("B") || correctOption.equals("C") || correctOption.equals("D"))) {
-            showAlert("Đáp án đúng phải là một trong các lựa chọn: A, B, C, D.");
-            return;
-        }
-
-        addSystemLine("Bạn đã gửi câu đố bằng UDP: " + question + " (Đáp án đúng: " + correctOption + ")");
-        sendRaw("QUIZ|" + encode(nameField.getText().trim())
-                + "|" + encode(question)
-                + "|" + encode(optionA)
-                + "|" + encode(optionB)
-                + "|" + encode(optionC)
-                + "|" + encode(optionD)
-                + "|" + encode(correctOption));
+    private void sendCaroInvite() {
+        startCaroGame(nameField.getText().trim(), true);
+        addSystemLine("Bạn đã tạo game caro chung qua UDP. Bạn đi trước với X.");
+        sendRaw("CARO_INVITE|" + encode(nameField.getText().trim()));
     }
 
-    private void showQuizCard(String sender, String question, String optionA, String optionB, String optionC,
-                              String optionD, String correctOption) {
+    private void startCaroGame(String opponentName, boolean iStart) {
+        caroMySymbol = iStart ? "X" : "O";
+        caroOpponentSymbol = iStart ? "O" : "X";
+        caroMyTurn = iStart;
+        caroGameActive = true;
+        caroBoard = new String[CARO_SIZE][CARO_SIZE];
+        caroButtons = new Button[CARO_SIZE][CARO_SIZE];
+
         VBox card = new VBox(8);
         card.setPadding(new Insets(10));
         card.setStyle("-fx-background-color: #fff3f0; -fx-border-color: #ff8a65; -fx-border-radius: 6; -fx-background-radius: 6;");
 
-        Label title = new Label(sender + " gửi câu đố UDP:");
+        Label title = new Label("Game caro UDP với " + opponentName);
         title.setStyle("-fx-font-weight: bold;");
-        Label questionLabel = new Label("Câu hỏi: " + question);
-        questionLabel.setWrapText(true);
+        Label symbolLabel = new Label("Bạn là " + caroMySymbol + ", đối thủ là " + caroOpponentSymbol + ".");
+        caroStatusLabel = new Label(iStart ? "Đến lượt bạn." : "Đối thủ đi trước, vui lòng chờ.");
 
-        ToggleGroup toggleGroup = new ToggleGroup();
-        RadioButton optionARadio = new RadioButton("A. " + optionA);
-        optionARadio.setToggleGroup(toggleGroup);
-        RadioButton optionBRadio = new RadioButton("B. " + optionB);
-        optionBRadio.setToggleGroup(toggleGroup);
-        RadioButton optionCRadio = new RadioButton("C. " + optionC);
-        optionCRadio.setToggleGroup(toggleGroup);
-        RadioButton optionDRadio = new RadioButton("D. " + optionD);
-        optionDRadio.setToggleGroup(toggleGroup);
+        GridPane boardPane = new GridPane();
+        boardPane.setHgap(6);
+        boardPane.setVgap(6);
 
-        Button submitButton = new Button("Chọn đáp án");
+        for (int row = 0; row < CARO_SIZE; row++) {
+            for (int col = 0; col < CARO_SIZE; col++) {
+                Button cellButton = new Button(" ");
+                cellButton.setPrefSize(60, 60);
+                final int currentRow = row;
+                final int currentCol = col;
+                cellButton.setOnAction(e -> makeCaroMove(currentRow, currentCol));
+                caroButtons[row][col] = cellButton;
+                boardPane.add(cellButton, col, row);
+            }
+        }
+
+        card.getChildren().addAll(title, symbolLabel, caroStatusLabel, boardPane);
+        messageBox.getChildren().add(card);
+        updateCaroBoardUi();
+    }
+
+    private void makeCaroMove(int row, int col) {
+        if (!caroGameActive) {
+            showAlert("Game caro chưa bắt đầu.");
+            return;
+        }
+        if (!caroMyTurn) {
+            showAlert("Chưa đến lượt bạn.");
+            return;
+        }
+        if (!caroBoard[row][col].isEmpty()) {
+            return;
+        }
+
+        caroBoard[row][col] = caroMySymbol;
+        updateCaroBoardUi();
+
+        if (hasCaroWinner(caroMySymbol)) {
+            caroGameActive = false;
+            caroStatusLabel.setText("Bạn thắng!");
+            disableCaroBoard();
+            sendRaw("CARO_MOVE|" + encode(nameField.getText().trim()) + "|" + encode(String.valueOf(row)) + "|" + encode(String.valueOf(col)));
+            sendRaw("CARO_RESULT|" + encode(nameField.getText().trim()) + "|" + encode("Bạn thua"));
+            return;
+        }
+
+        if (isCaroDraw()) {
+            caroGameActive = false;
+            caroStatusLabel.setText("Hòa.");
+            disableCaroBoard();
+            sendRaw("CARO_MOVE|" + encode(nameField.getText().trim()) + "|" + encode(String.valueOf(row)) + "|" + encode(String.valueOf(col)));
+            sendRaw("CARO_RESULT|" + encode(nameField.getText().trim()) + "|" + encode("Hòa"));
+            return;
+        }
+
+        caroMyTurn = false;
+        caroStatusLabel.setText("Đã gửi nước đi. Đang chờ đối thủ...");
+        updateCaroBoardUi();
+        sendRaw("CARO_MOVE|" + encode(nameField.getText().trim()) + "|" + encode(String.valueOf(row)) + "|" + encode(String.valueOf(col)));
+    }
+
+    private void applyOpponentMove(String sender, int row, int col) {
+        if (caroBoard == null || !caroGameActive) {
+            startCaroGame(sender, false);
+        }
+        if (caroBoard[row][col] == null || caroBoard[row][col].isEmpty()) {
+            caroBoard[row][col] = caroOpponentSymbol;
+        }
+
+        if (hasCaroWinner(caroOpponentSymbol)) {
+            updateCaroBoardUi();
+            caroGameActive = false;
+            caroStatusLabel.setText("Bạn thua.");
+            disableCaroBoard();
+            return;
+        }
+
+        if (isCaroDraw()) {
+            updateCaroBoardUi();
+            caroGameActive = false;
+            caroStatusLabel.setText("Hòa.");
+            disableCaroBoard();
+            return;
+        }
+
+        caroMyTurn = true;
+        caroStatusLabel.setText("Đến lượt bạn.");
+        updateCaroBoardUi();
+    }
+
+    private void updateCaroBoardUi() {
+        if (caroBoard == null || caroButtons == null) {
+            return;
+        }
+        for (int row = 0; row < CARO_SIZE; row++) {
+            for (int col = 0; col < CARO_SIZE; col++) {
+                if (caroBoard[row][col] == null) {
+                    caroBoard[row][col] = "";
+                }
+                caroButtons[row][col].setText(caroBoard[row][col].isEmpty() ? " " : caroBoard[row][col]);
+                caroButtons[row][col].setDisable(!caroGameActive || !caroMyTurn || !caroBoard[row][col].isEmpty());
+            }
+        }
+    }
+
+    private void disableCaroBoard() {
+        if (caroButtons == null) {
+            return;
+        }
+        for (int row = 0; row < CARO_SIZE; row++) {
+            for (int col = 0; col < CARO_SIZE; col++) {
+                caroButtons[row][col].setDisable(true);
+            }
+        }
+    }
+
+    private boolean hasCaroWinner(String symbol) {
+        for (int i = 0; i < CARO_SIZE; i++) {
+            if (symbol.equals(caroBoard[i][0]) && symbol.equals(caroBoard[i][1]) && symbol.equals(caroBoard[i][2])) {
+                return true;
+            }
+            if (symbol.equals(caroBoard[0][i]) && symbol.equals(caroBoard[1][i]) && symbol.equals(caroBoard[2][i])) {
+                return true;
+            }
+        }
+        return (symbol.equals(caroBoard[0][0]) && symbol.equals(caroBoard[1][1]) && symbol.equals(caroBoard[2][2]))
+                || (symbol.equals(caroBoard[0][2]) && symbol.equals(caroBoard[1][1]) && symbol.equals(caroBoard[2][0]));
+    }
+
+    private boolean isCaroDraw() {
+        for (int row = 0; row < CARO_SIZE; row++) {
+            for (int col = 0; col < CARO_SIZE; col++) {
+                if (caroBoard[row][col] == null || caroBoard[row][col].isEmpty()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private void sendReactionInvite() {
+        addSystemLine("Bạn đã gửi lời mời chơi game phản xạ UDP.");
+        sendRaw("REACTION_INVITE|" + encode(nameField.getText().trim()));
+    }
+
+    private void showReactionCard(String sender) {
+        VBox card = new VBox(8);
+        card.setPadding(new Insets(10));
+        card.setStyle("-fx-background-color: #f6fff0; -fx-border-color: #7ac74f; -fx-border-radius: 6; -fx-background-radius: 6;");
+
+        Label title = new Label(sender + " mời bạn chơi game phản xạ UDP");
+        title.setStyle("-fx-font-weight: bold;");
+        Label instructionLabel = new Label("Nhấn Bắt đầu, chờ chữ GO! xuất hiện rồi bấm thật nhanh.");
+        instructionLabel.setWrapText(true);
+        Label statusGameLabel = new Label("Sẵn sàng chưa?");
+        Button startButton = new Button("Bắt đầu");
+        Button tapButton = new Button("Bấm thật nhanh");
+        tapButton.setDisable(true);
         Label resultLabel = new Label();
 
-        submitButton.setOnAction(e -> {
-            RadioButton selected = (RadioButton) toggleGroup.getSelectedToggle();
-            if (selected == null) {
-                resultLabel.setText("Bạn chưa chọn đáp án.");
+        startButton.setOnAction(e -> {
+            startButton.setDisable(true);
+            tapButton.setDisable(true);
+            reactionReady = false;
+            reactionStartTime = -1;
+            statusGameLabel.setText("Chờ tín hiệu GO!...");
+
+            int delayMs = 1500 + random.nextInt(2501);
+            new Thread(() -> {
+                try {
+                    Thread.sleep(delayMs);
+                    Platform.runLater(() -> {
+                        reactionReady = true;
+                        reactionStartTime = System.currentTimeMillis();
+                        statusGameLabel.setText("GO!");
+                        tapButton.setDisable(false);
+                    });
+                } catch (InterruptedException ignored) {
+                }
+            }, "udp-reaction-delay").start();
+        });
+
+        tapButton.setOnAction(e -> {
+            if (!reactionReady || reactionStartTime < 0) {
+                resultLabel.setText("Bạn bấm quá sớm, hãy chơi lại.");
+                statusGameLabel.setText("Bấm quá sớm!");
+                tapButton.setDisable(true);
+                startButton.setDisable(false);
                 return;
             }
 
-            String selectedOption = selected.getText().substring(0, 1);
-            boolean correct = selectedOption.equalsIgnoreCase(correctOption.trim());
-            String result = correct ? "Đúng rồi" : "Sai rồi";
-            resultLabel.setText(result + ". Đáp án đúng là " + correctOption + ".");
-            sendRaw("QUIZ_RESULT|" + encode(nameField.getText().trim())
-                    + "|" + encode(selectedOption)
-                    + "|" + encode(result)
-                    + "|" + encode(correctOption));
-
-            submitButton.setDisable(true);
-            optionARadio.setDisable(true);
-            optionBRadio.setDisable(true);
-            optionCRadio.setDisable(true);
-            optionDRadio.setDisable(true);
+            long elapsed = System.currentTimeMillis() - reactionStartTime;
+            reactionReady = false;
+            reactionStartTime = -1;
+            tapButton.setDisable(true);
+            statusGameLabel.setText("Hoàn tất!");
+            resultLabel.setText("Phản xạ của bạn: " + elapsed + " ms");
+            sendRaw("REACTION_RESULT|" + encode(nameField.getText().trim()) + "|" + encode(String.valueOf(elapsed)));
+            startButton.setDisable(false);
         });
 
-        VBox optionsBox = new VBox(6, optionARadio, optionBRadio, optionCRadio, optionDRadio);
-        card.getChildren().addAll(title, questionLabel, optionsBox, submitButton, resultLabel);
+        card.getChildren().addAll(title, instructionLabel, statusGameLabel, new HBox(8, startButton, tapButton), resultLabel);
         messageBox.getChildren().add(card);
     }
 
@@ -415,11 +565,19 @@ public class UdpMainMenu extends Application {
         }
     }
 
-    private void addLine(String text) {
+    private void addLine(String text, boolean ownMessage) {
         Label label = new Label(text);
         label.setWrapText(true);
-        label.setStyle("-fx-padding: 2 0 2 0; -fx-text-fill: black;");
-        messageBox.getChildren().add(label);
+        label.setMaxWidth(420);
+        label.setStyle(ownMessage
+                ? "-fx-padding: 8 12 8 12; -fx-text-fill: black; -fx-background-color: #d9fdd3; -fx-background-radius: 14;"
+                : "-fx-padding: 8 12 8 12; -fx-text-fill: black; -fx-background-color: #f1f0f0; -fx-background-radius: 14;");
+
+        HBox wrapper = new HBox(label);
+        wrapper.setFillHeight(false);
+        wrapper.setAlignment(ownMessage ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+        wrapper.setPadding(new Insets(2, 0, 2, 0));
+        messageBox.getChildren().add(wrapper);
     }
 
     private void addSystemLine(String text) {

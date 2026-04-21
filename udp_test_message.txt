@@ -1,0 +1,18 @@
+UDP TEST FILE
+================
+
+Mục đích:
+- Dùng để test chức năng gửi file văn bản qua UDP.
+- Kiểm tra datagram nhận được có hiển thị đúng nội dung hay không.
+
+Nội dung mẫu:
+1. Xin chào từ file test UDP.
+2. Đây là dòng văn bản thứ hai.
+3. UDP phù hợp với truyền nhanh, nhẹ, độ trễ thấp.
+
+Ký tự đặc biệt:
+- Tiếng Việt: ă â ê ô ơ ư đ
+- Số: 6 7 8 9 10
+- Ký hiệu: ( ) [ ] { } < > ? /
+
+Kết thúc file test UDP.
